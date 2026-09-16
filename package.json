@@ -1,0 +1,120 @@
+{
+  "name": "corriere",
+  "version": "1.0.0",
+  "description": "Fast, flexible, zero-dependency modern HTTP client for JS/TS",
+  "type": "module",
+  "main": "./cjs/index.cjs",
+  "module": "./esm/index.js",
+  "types": "./esm/index.d.ts",
+  "author": "salvatorecorvaglia",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/salvatorecorvaglia/corriere.git"
+  },
+  "bugs": {
+    "url": "https://github.com/salvatorecorvaglia/corriere/issues"
+  },
+  "homepage": "https://github.com/salvatorecorvaglia/corriere",
+  "sideEffects": false,
+  "packageManager": "pnpm@11.23.0",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./esm/index.d.ts",
+        "default": "./esm/index.js"
+      },
+      "require": {
+        "types": "./cjs/index.d.cts",
+        "default": "./cjs/index.cjs"
+      }
+    },
+    "./core/*": {
+      "import": {
+        "types": "./esm/core/*.d.ts",
+        "default": "./esm/core/*.js"
+      },
+      "require": {
+        "types": "./cjs/core/*.d.cts",
+        "default": "./cjs/core/*.cjs"
+      }
+    },
+    "./helpers/*": {
+      "import": {
+        "types": "./esm/helpers/*.d.ts",
+        "default": "./esm/helpers/*.js"
+      },
+      "require": {
+        "types": "./cjs/helpers/*.d.cts",
+        "default": "./cjs/helpers/*.cjs"
+      }
+    },
+    "./interceptors/*": {
+      "import": {
+        "types": "./esm/interceptors/*.d.ts",
+        "default": "./esm/interceptors/*.js"
+      },
+      "require": {
+        "types": "./cjs/interceptors/*.d.cts",
+        "default": "./cjs/interceptors/*.cjs"
+      }
+    },
+    "./constants/*": {
+      "import": {
+        "types": "./esm/constants/*.d.ts",
+        "default": "./esm/constants/*.js"
+      },
+      "require": {
+        "types": "./cjs/constants/*.d.cts",
+        "default": "./cjs/constants/*.cjs"
+      }
+    },
+    "./defaults/*": {
+      "import": {
+        "types": "./esm/defaults/*.d.ts",
+        "default": "./esm/defaults/*.js"
+      },
+      "require": {
+        "types": "./cjs/defaults/*.d.cts",
+        "default": "./cjs/defaults/*.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/",
+    "cjs/",
+    "esm/"
+  ],
+  "scripts": {
+    "build:cjs": "tsup",
+    "build": "pnpm run build:cjs",
+    "prepublishOnly": "pnpm run build",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "release:npm": "gh workflow run publish-npm.yml -f publish_tag=$(git describe --tags --abbrev=0)",
+    "typecheck": "tsc --noEmit",
+    "verify:package": "node scripts/verify-package.mjs"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.13",
+    "@types/node": "^26.5.1",
+    "@vitest/coverage-v8": "^5.0.0",
+    "jsdom": "^30.0.1",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.0"
+  }
+}

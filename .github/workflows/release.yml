@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  validate:
+    name: Validate Tag Ref & Package Version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Validate tag format and version match
+        run: |
+          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            echo "::error::Release workflow must be run on a version tag ref starting with 'v' (e.g. refs/tags/v1.0.0)"
+            exit 1
+          fi
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PKG_VERSION=$(jq -r .version package.json)
+          echo "Tag version: $TAG_VERSION | package.json version: $PKG_VERSION"
+          if [[ "$TAG_VERSION" != "$PKG_VERSION" ]]; then
+            echo "::error::Tag version ($TAG_VERSION) does not match package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+
+  release:
+    name: Create GitHub Release
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Extract Changelog Section
+        id: extract_changelog
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          node -e "
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const tag = process.env.TAG_NAME || '';
+            const version = tag.startsWith('v') ? tag.slice(1) : tag;
+            let body = '';
+            if (fs.existsSync('CHANGELOG.md')) {
+              const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
+              const lines = changelog.split(/\r?\n/);
+              let startIdx = -1;
+              let endIdx = -1;
+              for (let i = 0; i < lines.length; i++) {
+                if (lines[i].startsWith('## [' + version + ']')) {
+                  startIdx = i;
+                  continue;
+                }
+                if (startIdx !== -1 && lines[i].startsWith('## [')) {
+                  endIdx = i;
+                  break;
+                }
+              }
+              if (startIdx !== -1) {
+                const sectionLines = lines.slice(startIdx + 1, endIdx !== -1 ? endIdx : lines.length);
+                body = sectionLines.join('\n').trim();
+              }
+            }
+            if (!body) {
+              body = 'Release notes for version ' + tag;
+            }
+            const fsOutput = process.env.GITHUB_OUTPUT;
+            const delimiter = 'EOF_' + crypto.randomUUID().replace(/-/g, '');
+            fs.appendFileSync(fsOutput, 'body<<' + delimiter + '\n' + body + '\n' + delimiter + '\n');
+          "
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Corriere ${{ github.ref_name }}
+          body: ${{ steps.extract_changelog.outputs.body }}
+          draft: false
+          prerelease: false
+
+  publish-npm:
+    name: Publish unscoped to npmjs
+    needs: [release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: pnpm pack --dry-run
+      - name: Verify built package loads
+        run: pnpm run verify:package
+      - name: Lint package metadata
+        run: npx --yes publint
+      - run: pnpm publish --access public --provenance --no-git-checks

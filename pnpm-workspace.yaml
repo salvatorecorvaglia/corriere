@@ -1,0 +1,19 @@
+allowBuilds:
+  '@biomejs/biome': true
+  esbuild: true
+
+minimumReleaseAgeExclude:
+  - '@biomejs/biome@2.5.7 || 2.5.13'
+  - '@biomejs/cli-darwin-arm64@2.5.7 || 2.5.13'
+  - '@biomejs/cli-darwin-x64@2.5.7 || 2.5.13'
+  - '@biomejs/cli-linux-arm64-musl@2.5.7 || 2.5.13'
+  - '@biomejs/cli-linux-arm64@2.5.7 || 2.5.13'
+  - '@biomejs/cli-linux-x64-musl@2.5.7 || 2.5.13'
+  - '@biomejs/cli-linux-x64@2.5.7 || 2.5.13'
+  - '@biomejs/cli-win32-arm64@2.5.7 || 2.5.13'
+  - '@biomejs/cli-win32-x64@2.5.7 || 2.5.13'
+  - '@types/node@26.3.0 || 26.4.0'
+
+overrides:
+  esbuild: ^0.28.1
+  postcss: ^8.5.23
