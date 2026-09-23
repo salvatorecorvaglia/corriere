@@ -107,3 +107,5 @@ jobs:
       - name: Lint package metadata
         run: npx --yes publint
       - run: pnpm publish --access public --provenance --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
