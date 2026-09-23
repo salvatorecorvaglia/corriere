@@ -17,7 +17,7 @@ permissions:
 jobs:
   test:
     name: Test before publish
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         node-version: [22, 24]
@@ -36,7 +36,7 @@ jobs:
 
   publish-npm:
     name: Publish unscoped to npmjs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: test
     steps:
       - uses: actions/checkout@v6
