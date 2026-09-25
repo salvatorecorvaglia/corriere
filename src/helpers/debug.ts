@@ -29,7 +29,7 @@ export function logRequest(config: CorriereRequestConfig, fullUrl: string): void
   const method = (config.method || 'GET').toUpperCase();
   const url = redactURL(fullUrl || config.url || '') || '';
 
-  const parts: string[] = [`🐦‍⬛ [Corriere] → ${method} ${url}`];
+  const parts: string[] = [`🔔 [Corriere] → ${method} ${url}`];
 
   if (safe.params && Object.keys(safe.params).length > 0) {
     try {
@@ -69,7 +69,7 @@ export function logResponse(response: CorriereResponse): void {
 
   const statusIcon = status >= 200 && status < 300 ? '✅' : status >= 400 ? '❌' : '⚠️';
 
-  const parts: string[] = [`🐦‍⬛ [Corriere] ← ${statusIcon} ${status} ${statusText} (${duration})`];
+  const parts: string[] = [`🔔 [Corriere] ← ${statusIcon} ${status} ${statusText} (${duration})`];
 
   if (response.data) {
     try {
@@ -89,7 +89,7 @@ export function logResponse(response: CorriereResponse): void {
 export function logError(error: CorriereError, config?: CorriereRequestConfig): void {
   if (!config?.debug) return;
 
-  const parts: string[] = [`🐦‍⬛ [Corriere] ← ❌ ERROR: ${error.message}`];
+  const parts: string[] = [`🔔 [Corriere] ← ❌ ERROR: ${error.message}`];
 
   if (error.code) {
     parts.push(`   Code: ${error.code}`);
