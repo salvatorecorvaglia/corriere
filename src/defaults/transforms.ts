@@ -1,3 +1,22 @@
+import { isBinaryData, isReadableStream } from '../helpers/isBinary';
+
+/**
+ * Replaces the content type when it is absent or JSON — the `post`/`put`/`patch` default —
+ * with `contentType`, or just removes it when `contentType` is `null` (so fetch can derive
+ * one, as it does from a `Blob`'s own type). A non-JSON type the caller set is kept.
+ */
+function relabelDefaultJSON(
+  headers: Record<string, string | string[]>,
+  contentType: string | null,
+): void {
+  if (!headers || typeof headers !== 'object') return;
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === 'content-type');
+  const current = key ? String(headers[key]).toLowerCase() : '';
+  if (key && !current.startsWith('application/json')) return;
+  if (key) delete headers[key];
+  if (contentType) headers['Content-Type'] = contentType;
+}
+
 export function defaultTransformRequest(
   data: unknown,
   headers: Record<string, string | string[]>,
@@ -6,13 +25,27 @@ export function defaultTransformRequest(
     return data;
   }
 
+  // Bodies fetch sends as they are. Each still needs an honest label: fetch derives one
+  // only when no content type is set, and `post`/`put`/`patch` default to JSON.
+  if (typeof URLSearchParams !== 'undefined' && data instanceof URLSearchParams) {
+    relabelDefaultJSON(headers, 'application/x-www-form-urlencoded;charset=utf-8');
+    return data;
+  }
+  if (typeof Blob !== 'undefined' && data instanceof Blob) {
+    relabelDefaultJSON(headers, null);
+    return data;
+  }
+  // Typed arrays and `Buffer` used to fall through to `JSON.stringify` below, which turned
+  // raw bytes into `{"0":1,…}`.
+  if (isBinaryData(data)) {
+    relabelDefaultJSON(headers, 'application/octet-stream');
+    return data;
+  }
+
   if (
     typeof data === 'string' ||
-    data instanceof ArrayBuffer ||
-    (typeof Blob !== 'undefined' && data instanceof Blob) ||
     (typeof FormData !== 'undefined' && data instanceof FormData) ||
-    (typeof URLSearchParams !== 'undefined' && data instanceof URLSearchParams) ||
-    (typeof ReadableStream !== 'undefined' && data instanceof ReadableStream)
+    isReadableStream(data)
   ) {
     return data;
   }

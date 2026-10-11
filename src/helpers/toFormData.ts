@@ -1,4 +1,14 @@
 import { withCycleGuard } from './cycleGuard';
+import { isBinaryData } from './isBinary';
+
+/**
+ * The form field name for `key` nested under `namespace`: `ns[key]` with brackets, `ns.key`
+ * without, or just `key` at the top level. Array and `Set` positions always use brackets.
+ */
+function childKey(namespace: string | undefined, key: string, brackets: boolean): string {
+  if (!namespace) return key;
+  return brackets ? `${namespace}[${key}]` : `${namespace}.${key}`;
+}
 
 export function toFormData(
   obj: any,
@@ -8,13 +18,13 @@ export function toFormData(
   options?: { brackets?: boolean },
 ): FormData {
   const fd = form || new FormData();
-  let formKey: string;
 
   if (obj === null || obj === undefined) {
     return fd;
   }
 
   const visited = seen || new WeakSet<any>();
+  const brackets = options?.brackets ?? false;
 
   if (obj instanceof Date) {
     fd.append(namespace || '', obj.toISOString());
@@ -26,14 +36,7 @@ export function toFormData(
       visited,
       () => {
         for (const [key, value] of obj.entries()) {
-          const useBrackets = options?.brackets ?? false;
-          const strKey = String(key);
-          formKey = namespace
-            ? useBrackets
-              ? `${namespace}[${strKey}]`
-              : `${namespace}.${strKey}`
-            : strKey;
-          toFormData(value, fd, formKey, visited, options);
+          toFormData(value, fd, childKey(namespace, String(key), brackets), visited, options);
         }
       },
       () => {},
@@ -45,40 +48,23 @@ export function toFormData(
       () => {
         let index = 0;
         for (const value of obj.values()) {
-          formKey = namespace ? `${namespace}[${index}]` : String(index);
-          toFormData(value, fd, formKey, visited, options);
+          toFormData(value, fd, childKey(namespace, String(index), true), visited, options);
           index++;
         }
       },
       () => {},
     );
-  } else if (
-    typeof obj === 'object' &&
-    !(typeof File !== 'undefined' && obj instanceof File) &&
-    !(typeof Blob !== 'undefined' && obj instanceof Blob) &&
-    !(typeof ArrayBuffer !== 'undefined' && obj instanceof ArrayBuffer) &&
-    !(typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(obj)) &&
-    !(typeof Buffer !== 'undefined' && Buffer.isBuffer(obj))
-  ) {
+  } else if (typeof obj === 'object' && !isBinaryData(obj)) {
     // Marks the current path only — unmarking on the way out breaks cycles while still
     // emitting an object that legitimately appears under two different keys.
     withCycleGuard(
       obj,
       visited,
       () => {
-        Object.keys(obj).forEach((key) => {
-          if (Array.isArray(obj)) {
-            formKey = namespace ? `${namespace}[${key}]` : key;
-          } else {
-            const useBrackets = options?.brackets ?? false;
-            formKey = namespace
-              ? useBrackets
-                ? `${namespace}[${key}]`
-                : `${namespace}.${key}`
-              : key;
-          }
-          toFormData(obj[key], fd, formKey, visited, options);
-        });
+        const isArray = Array.isArray(obj);
+        for (const key of Object.keys(obj)) {
+          toFormData(obj[key], fd, childKey(namespace, key, isArray || brackets), visited, options);
+        }
       },
       () => {},
     );

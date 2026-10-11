@@ -129,3 +129,26 @@ describe('stream backpressure', () => {
     await reader.cancel();
   });
 });
+
+/**
+ * Reading progress (or enforcing `maxContentLength`) re-wraps the body in a new `Response`,
+ * and that wrapper used to be exposed as `response.request` — losing the original's `url`,
+ * `redirected` and `type`.
+ */
+describe('response.request when the body is wrapped', () => {
+  it('is the Response fetch actually returned', async () => {
+    const served = new Response(bodyOf(['{"a":1}']), {
+      headers: { 'content-type': 'application/json' },
+    });
+    global.fetch = vi.fn(() => Promise.resolve(served)) as any;
+
+    const res = await dispatchRequest({
+      url: 'https://api.test.com/x',
+      method: 'get',
+      onDownloadProgress: () => {},
+      maxContentLength: 1000,
+    });
+    expect(res.data).toEqual({ a: 1 });
+    expect(res.request).toBe(served);
+  });
+});

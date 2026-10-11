@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import Corriere from '../src/corriere';
 import { logError, logRequest, logResponse } from '../src/helpers/debug';
 
 describe('debug.ts', () => {
@@ -301,5 +302,83 @@ describe('debug.ts', () => {
     it('does not crash when error has no code or response', () => {
       expect(() => logError(new Error('bare error') as any, { debug: true })).not.toThrow();
     });
+  });
+});
+
+/**
+ * The request line and the response line were logged against the final config, the one
+ * request interceptors produced, but errors were logged against the config from *before*
+ * the interceptors ran. An interceptor that turned `debug` on got the request logged and
+ * the failure silently dropped.
+ */
+describe('debug logging through a client', () => {
+  let consoleSpy: any;
+
+  beforeEach(() => {
+    consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+  });
+
+  it('logs a failure when a request interceptor enabled debug', async () => {
+    global.fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response('{}', { status: 500, headers: { 'content-type': 'application/json' } }),
+      ),
+    ) as any;
+    const client = new Corriere();
+    client.interceptors.request.use((config: any) => ({ ...config, debug: true }));
+
+    await expect(client.get('https://api.test.com/x')).rejects.toMatchObject({
+      code: 'ERR_BAD_RESPONSE',
+    });
+
+    const output = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
+    expect(output).toContain('→ GET');
+    expect(output).toContain('ERROR: Request failed with status code 500');
+  });
+});
+
+/**
+ * With `debug` on, the response size was estimated by `JSON.stringify`-ing the whole body on
+ * every response. The server's `content-length`, when sent, is exact and free.
+ */
+describe('logResponse size', () => {
+  let consoleSpy: any;
+
+  beforeEach(() => {
+    consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+  });
+
+  it('reports content-length when the server sent it', () => {
+    logResponse({
+      config: { debug: true },
+      status: 200,
+      statusText: 'OK',
+      duration: 5,
+      data: { small: true },
+      headers: { 'content-length': '2048' },
+      request: {} as any,
+    } as any);
+    expect(consoleSpy.mock.calls[0][0]).toContain('Size: ~2.0 KB');
+  });
+
+  it('falls back to estimating from the data without content-length', () => {
+    logResponse({
+      config: { debug: true },
+      status: 200,
+      statusText: 'OK',
+      duration: 5,
+      data: 'hello',
+      headers: {},
+      request: {} as any,
+    } as any);
+    expect(consoleSpy.mock.calls[0][0]).toContain('Size: ~5.0 B');
   });
 });

@@ -1,5 +1,6 @@
 import ErrorCodes from '../constants/errorCodes';
 import { withCycleGuard } from '../helpers/cycleGuard';
+import { isBinaryData, isReadableStream } from '../helpers/isBinary';
 import type { CorriereRequestConfig, CorriereResponse, InternalConfig } from '../types';
 
 function redactHeaders(headers: unknown, seen?: WeakSet<object>): unknown {
@@ -18,7 +19,8 @@ function redactHeaders(headers: unknown, seen?: WeakSet<object>): unknown {
           /^cookie$/i.test(key) ||
           /^set-cookie$/i.test(key) ||
           /^x-api-key$/i.test(key) ||
-          /^api-key$/i.test(key)
+          /^api-key$/i.test(key) ||
+          /^x-(auth|access|csrf|xsrf)-token$/i.test(key)
         ) {
           out[key] = '[REDACTED]';
         } else if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -40,14 +42,7 @@ export function redactBody(value: unknown, seen?: WeakSet<object>): unknown {
   if (value === null || typeof value !== 'object') return value;
 
   // Guard against binary formats, streams, buffers to prevent heavy serialization
-  if (
-    (typeof File !== 'undefined' && value instanceof File) ||
-    (typeof Blob !== 'undefined' && value instanceof Blob) ||
-    (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) ||
-    (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(value)) ||
-    (typeof Buffer !== 'undefined' && Buffer.isBuffer(value)) ||
-    (typeof ReadableStream !== 'undefined' && value instanceof ReadableStream)
-  ) {
+  if (isBinaryData(value) || isReadableStream(value)) {
     return '[Binary/Stream Data]';
   }
 
@@ -212,7 +207,6 @@ export const FROM_CACHE = Symbol('corriere.fromCache');
 export class CorriereError extends Error {
   static ERR_BAD_OPTION_VALUE: string = ErrorCodes.ERR_BAD_OPTION_VALUE;
   static ERR_BAD_OPTION: string = ErrorCodes.ERR_BAD_OPTION;
-  static ECONNABORTED: string = ErrorCodes.ECONNABORTED;
   static ETIMEDOUT: string = ErrorCodes.ETIMEDOUT;
   static ERR_NETWORK: string = ErrorCodes.ERR_NETWORK;
   static ERR_FR_TOO_MANY_REDIRECTS: string = ErrorCodes.ERR_FR_TOO_MANY_REDIRECTS;
@@ -292,6 +286,35 @@ export class CorriereError extends Error {
       status: this.response ? this.response.status : null,
       config: this.config,
     };
+  }
+
+  /**
+   * The error for a cancelled request, built from an `AbortSignal`'s `reason`: an `Error`
+   * reason supplies the message and becomes `cause`, a string reason is the message, and
+   * anything else falls back to `fallbackMessage`. Every cancellation path — an aborted
+   * fetch, a dedupe subscriber, the retry backoff and the rate-limiter queue — goes
+   * through here, so `isCancel()` and `error.message` behave the same for all of them.
+   */
+  static canceled(
+    reason: unknown,
+    config: CorriereRequestConfig | null,
+    options: { fallbackMessage?: string; response?: CorriereResponse | null } = {},
+  ): CorriereError {
+    const message =
+      reason instanceof Error
+        ? reason.message
+        : typeof reason === 'string'
+          ? reason
+          : (options.fallbackMessage ?? 'Request aborted');
+    const err = new CorriereError(
+      message,
+      ErrorCodes.ERR_CANCELED,
+      config,
+      null,
+      options.response ?? null,
+    );
+    if (reason instanceof Error) err.cause = reason;
+    return err;
   }
 
   static from(

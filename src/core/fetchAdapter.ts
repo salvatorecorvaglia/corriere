@@ -120,10 +120,10 @@ async function fetchFollowingRedirects(
       for (const name of CREDENTIAL_HEADERS) headers.delete(name);
     }
 
-    // 303 always downgrades to GET; 301/302 do so for POST, matching fetch and browsers.
-    // 307/308 preserve both method and body by definition.
+    // 303 downgrades to GET (except HEAD, which stays HEAD); 301/302 do so for POST —
+    // the Fetch spec's rules, matching browsers. 307/308 preserve method and body.
     if (
-      response.status === 303 ||
+      (response.status === 303 && method !== 'HEAD') ||
       ((response.status === 301 || response.status === 302) && method === 'POST')
     ) {
       method = 'GET';
@@ -143,9 +143,46 @@ async function fetchFollowingRedirects(
   }
 }
 
+/**
+ * The error for a body labelled JSON that does not parse.
+ *
+ * Neither the body nor the parser's own message goes into `error.message`: messages are
+ * never redacted and land in logs and crash reporters as-is, and V8's `SyntaxError` message
+ * quotes the input. Only the position is kept. The raw body stays reachable, deliberately,
+ * as `error.response.data`, alongside the status and headers.
+ */
+function jsonParseError(
+  text: string,
+  parseError: unknown,
+  rawResponse: Response,
+  config: CorriereRequestConfig,
+  requestStartTime: number,
+): CorriereError {
+  const position = /position (\d+)/.exec(String((parseError as Error)?.message ?? ''))?.[1];
+  const response: CorriereResponse = {
+    data: text,
+    status: rawResponse.status,
+    statusText: rawResponse.statusText,
+    headers: parseHeaders(rawResponse.headers),
+    config,
+    request: rawResponse,
+    duration: Date.now() - requestStartTime,
+  };
+  return new CorriereError(
+    `Failed to parse JSON response${position ? ` at position ${position}` : ''} ` +
+      `(${text.length} characters). The raw body is available as error.response.data.`,
+    CorriereError.ERR_BAD_RESPONSE,
+    config,
+    rawResponse,
+    response,
+  );
+}
+
 async function readResponseData(
   fetchResponse: Response,
   config: CorriereRequestConfig,
+  rawResponse: Response,
+  requestStartTime: number,
 ): Promise<unknown> {
   const responseType = config.responseType || 'json';
   switch (responseType) {
@@ -168,15 +205,7 @@ async function readResponseData(
         try {
           return JSON.parse(text);
         } catch (err) {
-          throw new CorriereError(
-            `Failed to parse JSON response: ${(err as Error).message}. Raw body: ${
-              text.length > 500 ? `${text.slice(0, 500)}…` : text
-            }`,
-            CorriereError.ERR_BAD_RESPONSE,
-            config,
-            fetchResponse,
-            null,
-          );
+          throw jsonParseError(text, err, rawResponse, config, requestStartTime);
         }
       }
       return await fetchResponse.text();
@@ -204,13 +233,22 @@ interface AbortWiring {
   cleanup: () => void;
 }
 
+/**
+ * The largest delay a timer honours. Node clamps anything above it to 1 ms (and browsers
+ * overflow it), so a larger `timeout` would fire almost immediately instead of never.
+ */
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+
 function setupAbort(config: CorriereRequestConfig, fetchOptions: RequestInit): AbortWiring {
   if (
     config.timeout !== undefined &&
-    (typeof config.timeout !== 'number' || Number.isNaN(config.timeout) || config.timeout < 0)
+    (typeof config.timeout !== 'number' ||
+      Number.isNaN(config.timeout) ||
+      config.timeout < 0 ||
+      (Number.isFinite(config.timeout) && config.timeout > MAX_TIMEOUT_MS))
   ) {
     throw new CorriereError(
-      `Invalid timeout value: ${config.timeout}`,
+      `Invalid timeout value: ${config.timeout}. Expected 0–${MAX_TIMEOUT_MS} ms, or Infinity for no timeout.`,
       CorriereError.ERR_BAD_OPTION_VALUE,
       config,
       null,
@@ -218,8 +256,9 @@ function setupAbort(config: CorriereRequestConfig, fetchOptions: RequestInit): A
     );
   }
 
+  // `Infinity` reads naturally as "no timeout", and is treated as such.
   const timeoutValue = Number(config.timeout);
-  const hasTimeout = !Number.isNaN(timeoutValue) && timeoutValue > 0;
+  const hasTimeout = Number.isFinite(timeoutValue) && timeoutValue > 0;
 
   if (!hasTimeout) {
     if (config.signal) fetchOptions.signal = config.signal;
@@ -354,18 +393,7 @@ function classifyFetchError(
   const isAbort =
     (error instanceof Error && error.name === 'AbortError') || !!config.signal?.aborted;
   if (isAbort) {
-    const reason = config.signal?.reason;
-    const message =
-      reason instanceof Error
-        ? reason.message
-        : typeof reason === 'string'
-          ? reason
-          : 'Request aborted';
-    const err = new CorriereError(message, CorriereError.ERR_CANCELED, config, null, null);
-    if (reason instanceof Error) {
-      err.cause = reason;
-    }
-    return err;
+    return CorriereError.canceled(config.signal?.reason, config);
   }
 
   return CorriereError.from(
@@ -539,7 +567,7 @@ export default async function fetchAdapter(
 
     let responseData: unknown;
     try {
-      responseData = await readResponseData(fetchResponse, config);
+      responseData = await readResponseData(fetchResponse, config, rawResponse, requestStartTime);
       if (config.responseType === 'stream') {
         isStream = true;
         responseData = wrapStreamWithCleanup(responseData, abort.cleanup);
@@ -552,18 +580,20 @@ export default async function fetchAdapter(
         readError as Error,
         CorriereError.ERR_BAD_RESPONSE,
         config,
-        fetchResponse,
+        rawResponse,
         null,
       );
     }
 
+    // `rawResponse`, not the wrapper `wrapResponseStream` may have built for progress or
+    // size limits: only the original carries `url`, `redirected` and `type`.
     return {
       data: responseData,
-      status: fetchResponse.status,
-      statusText: fetchResponse.statusText,
-      headers: parseHeaders(fetchResponse.headers),
+      status: rawResponse.status,
+      statusText: rawResponse.statusText,
+      headers: parseHeaders(rawResponse.headers),
       config,
-      request: fetchResponse,
+      request: rawResponse,
       duration: Date.now() - requestStartTime,
     };
   } catch (error) {

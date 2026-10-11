@@ -168,3 +168,108 @@ describe('transformResponse on a non-JSON response', () => {
     expect(response.data).toBe('HELLO WORLD');
   });
 });
+
+/**
+ * `post`/`put`/`patch` default to `Content-Type: application/json`, and a `URLSearchParams`
+ * body passed straight through the request transform, so it went out labelled as JSON.
+ * fetch only infers `application/x-www-form-urlencoded` when no content type is set.
+ */
+describe('URLSearchParams request bodies', () => {
+  let contentType: string | null;
+
+  beforeEach(() => {
+    contentType = null;
+    global.fetch = vi.fn((_url: any, init: any) => {
+      contentType = new Headers(init.headers).get('content-type');
+      return Promise.resolve(
+        new Response('{}', { headers: { 'content-type': 'application/json' } }),
+      );
+    }) as any;
+  });
+
+  for (const method of ['post', 'put', 'patch'] as const) {
+    it(`${method}() sends a URLSearchParams body as form-urlencoded`, async () => {
+      await new Corriere()[method]('https://api.test.com/form', new URLSearchParams({ a: '1' }));
+      expect(contentType).toBe('application/x-www-form-urlencoded;charset=utf-8');
+    });
+  }
+
+  it('keeps a content type the caller set explicitly', async () => {
+    await new Corriere().post('https://api.test.com/form', new URLSearchParams({ a: '1' }), {
+      headers: { 'Content-Type': 'text/plain' },
+    });
+    expect(contentType).toBe('text/plain');
+  });
+});
+
+/**
+ * The default request transform passed `ArrayBuffer` and `Blob` through but not typed arrays
+ * or `Buffer`, so a `Uint8Array` body was JSON-encoded to `{"0":1,…}` and a `Buffer` to
+ * `{"type":"Buffer",…}`. Binary bodies that did get through were still labelled
+ * `application/json` by the `post`/`put`/`patch` default.
+ */
+describe('binary request bodies', () => {
+  let sent: { body: unknown; contentType: string | null };
+
+  beforeEach(() => {
+    global.fetch = vi.fn((url: any, init: any) => {
+      // Built as a real Request so the header is the one fetch would send — including the
+      // type fetch derives from a Blob when none is set.
+      const wire = new Request(url, {
+        method: init.method,
+        body: init.body,
+        headers: init.headers,
+      });
+      sent = { body: init.body, contentType: wire.headers.get('content-type') };
+      return Promise.resolve(
+        new Response('{}', { headers: { 'content-type': 'application/json' } }),
+      );
+    }) as any;
+  });
+
+  it('sends a Uint8Array as raw bytes, labelled application/octet-stream', async () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    await new Corriere().post('https://api.test.com/upload', bytes);
+    expect(sent.body).toBe(bytes);
+    expect(sent.contentType).toBe('application/octet-stream');
+  });
+
+  it('sends a Buffer as raw bytes', async () => {
+    const buffer = Buffer.from('hi');
+    await new Corriere().put('https://api.test.com/upload', buffer);
+    expect(sent.body).toBe(buffer);
+    expect(sent.contentType).toBe('application/octet-stream');
+  });
+
+  it('labels an ArrayBuffer application/octet-stream instead of application/json', async () => {
+    const ab = new ArrayBuffer(2);
+    await new Corriere().patch('https://api.test.com/upload', ab);
+    expect(sent.body).toBe(ab);
+    expect(sent.contentType).toBe('application/octet-stream');
+  });
+
+  it('sends a Blob with no content type of its own, so fetch labels it from blob.type', async () => {
+    // Asserts only what Corriere controls — the header it sets. Deriving the type from the
+    // Blob is fetch's job, and under jsdom a jsdom Blob is not one Node's fetch recognises.
+    let declared: string | null = 'unset';
+    let body: unknown;
+    global.fetch = vi.fn((_url: any, init: any) => {
+      declared = new Headers(init.headers).get('content-type');
+      body = init.body;
+      return Promise.resolve(
+        new Response('{}', { headers: { 'content-type': 'application/json' } }),
+      );
+    }) as any;
+    const blob = new Blob(['x'], { type: 'image/png' });
+    await new Corriere().post('https://api.test.com/upload', blob);
+    expect(body).toBe(blob);
+    expect(declared).toBeNull();
+  });
+
+  it('keeps a content type the caller set explicitly', async () => {
+    await new Corriere().post('https://api.test.com/upload', new Uint8Array([1]), {
+      headers: { 'Content-Type': 'image/png' },
+    });
+    expect(sent.contentType).toBe('image/png');
+  });
+});

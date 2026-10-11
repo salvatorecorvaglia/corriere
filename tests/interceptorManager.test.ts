@@ -159,7 +159,9 @@ describe('interceptorManager', () => {
     const handlers = manager.handlers;
     expect(handlers.length).toBe(2);
     expect(handlers[0]).toBeNull();
-    expect(handlers[1]).toBeDefined();
+    // `toBeDefined()` accepted `null` — the very value an ejected slot holds.
+    expect(handlers[1]).not.toBeNull();
+    expect(handlers[1]?.fulfilled).toBeTypeOf('function');
   });
 });
 

@@ -46,8 +46,6 @@ describe('Corriere class', () => {
     });
 
     it('creates request and response interceptor managers', () => {
-      expect(corriere.interceptors.request).toBeDefined();
-      expect(corriere.interceptors.response).toBeDefined();
       expect(typeof corriere.interceptors.request.use).toBe('function');
       expect(typeof corriere.interceptors.response.use).toBe('function');
     });
@@ -137,7 +135,6 @@ describe('Corriere class', () => {
         const res = await (corriere as any)[formMethod]('/upload', {
           file: 'data',
         });
-        expect(res.config.headers).toBeDefined();
         expect(res.config.headers!['Content-Type']).toBe('multipart/form-data');
       });
 

@@ -1,5 +1,6 @@
 import { setBasicAuth } from '../helpers/auth';
 import { buildFetchHeaders, flattenHeaders, removeContentType } from '../helpers/flattenHeaders';
+import { isBinaryData, isReadableStream } from '../helpers/isBinary';
 import { MemoryCache } from '../helpers/memoryCache';
 import settle from '../helpers/settle';
 import transformData from '../helpers/transformData';
@@ -10,9 +11,9 @@ import type {
   InternalConfig,
   TransformFunction,
 } from '../types';
-import buildURL from './buildURL';
+import { resolveURL } from './buildURL';
 import CorriereError, { FROM_CACHE } from './corriereError';
-import fetchAdapter from './fetchAdapter';
+import fetchAdapter, { CREDENTIAL_HEADERS } from './fetchAdapter';
 import { assertAllowedProtocol } from './protocol';
 
 type HeadersConfig = Record<string, Record<string, string | string[]>>;
@@ -72,7 +73,7 @@ function buildCacheKey(
     })
     .join('&');
 
-  return `${method}:${fullURL}|h:${hashHeaders(serializedHeaders)}|c=${withCreds}|t=${respType}`;
+  return `v2:${method}:${fullURL}|h:${hashHeaders(serializedHeaders)}|c=${withCreds}|t=${respType}`;
 }
 
 /**
@@ -82,9 +83,7 @@ function buildCacheKey(
  * know the key format — and so the two can never disagree about it.
  */
 export function cacheKeyFor(config: CorriereRequestConfig): string {
-  const fullURL =
-    (config as InternalConfig)._builtUrl ||
-    buildURL(config.url ?? '', config.baseURL, config.params, config.paramsSerializer);
+  const fullURL = (config as InternalConfig)._builtUrl || resolveURL(config);
   const flatHeaders = flattenHeaders(config.headers as HeadersConfig | undefined, config.method);
   setBasicAuth(config, flatHeaders);
   return buildCacheKey(config, fullURL, flatHeaders);
@@ -167,42 +166,62 @@ async function applySchema(
 }
 
 /**
- * Turns a raw adapter response into the value handed back to one caller: applies
- * `transformResponse`, enforces `validateStatus`, and stores the result if caching is on.
+ * The value stored in a cache: a response minus its `config`.
  *
- * The cache write is bracketed on both sides for a reason.
+ * `config` is overwritten with the reader's own config on every cache hit, so storing it
+ * only kept the caller's request body, signal and hook closures alive for the whole TTL.
+ */
+function toCacheEntry(response: CorriereResponse): Omit<CorriereResponse, 'config'> {
+  const { config: _config, ...entry } = response;
+  return entry;
+}
+
+/**
+ * Turns a raw adapter response — live, or replayed from the cache — into the value handed
+ * back to one caller: applies that caller's `transformResponse`, enforces `validateStatus`,
+ * stores the server's response if caching is on, then applies `schema`.
  *
- * It happens *after* settling because storing first meant a 4xx/5xx was written to the
- * cache and then replayed to later callers as a resolved success, silently bypassing
- * `validateStatus`.
+ * The cache holds what the server sent, not what any one caller made of it. The entry is
+ * snapshotted *before* `transformResponse` runs and written only *after* settling:
  *
- * It happens *before* `applySchema` because `applySchema` mutates `settled.data` in place.
- * A schema that transforms its input (a Zod `.transform()`, say) would otherwise write its
- * transformed output into a cache shared with callers who passed no schema at all, and
- * they would receive a shape they never asked for. Caching the pre-schema value keeps the
- * cache a record of what the server sent; every reader re-applies its own schema on the
- * way out (see the cache-hit path in `dispatchRequest`).
+ * - Before transforming, because storing a caller's transformed data handed that shape to
+ *   every later caller, whatever transforms they passed — and a transform that mutates its
+ *   input in place would otherwise corrupt the snapshot.
+ * - After settling, because storing first meant a 4xx/5xx was written to the cache and then
+ *   replayed to later callers as a resolved success, silently bypassing `validateStatus`.
+ * - Before `applySchema`, which mutates `settled.data` in place; a schema that reshapes its
+ *   input (a Zod `.transform()`, say) must not write its output into a shared cache.
  *
- * `cloneRaw` is set only for the dedupe fan-out, where a single adapter response is shared
- * by several callers and each needs an independent copy. A single-consumer response is its
- * caller's alone, so cloning it would be pure overhead.
+ * A cache hit comes back through this same function with `writeCache: false`, so every
+ * reader gets its own transforms, status check and schema, exactly as on a live request.
+ *
+ * `cloneRaw` is set when `raw` is shared — the dedupe fan-out, where several callers split
+ * one adapter response, and a cache hit — so each caller gets an independent copy. A live
+ * single-consumer response is its caller's alone, so cloning it would be pure overhead.
  *
  * `writeCache` is false for every dedupe subscriber but the first: they all share one
- * cache key, so N writes would be redundant and which one won would depend on how long
- * each caller's hooks took.
+ * cache key, so N writes would be redundant.
  */
 async function finalizeAndSettle(
   raw: CorriereResponse,
   config: CorriereRequestConfig,
   options: {
-    isGet: boolean;
+    cacheable: boolean;
     cacheKey: string;
     cloneRaw: boolean;
     writeCache: boolean;
     registry: RequestRegistry;
   },
 ): Promise<CorriereResponse> {
-  const source = options.cloneRaw && config.cacheClone !== false ? cloneResponse(raw) : raw;
+  const clone = config.cacheClone !== false;
+  const source = options.cloneRaw && clone ? cloneResponse(raw) : raw;
+
+  const ttl = config.cacheTTL ?? DEFAULT_CACHE_TTL;
+  const cacheEntry =
+    options.writeCache && options.cacheable && config.cache && ttl > 0
+      ? toCacheEntry(clone ? cloneResponse(source) : source)
+      : null;
+
   const response = finalizeResponse(source, config);
 
   response.data = await transformData(
@@ -215,11 +234,10 @@ async function finalizeAndSettle(
 
   const settled = await settleResponse(response, config);
 
-  const ttl = config.cacheTTL ?? DEFAULT_CACHE_TTL;
-  if (options.writeCache && options.isGet && config.cache && ttl > 0) {
+  if (cacheEntry) {
     await resolveCacheProvider(config.cache, options.registry).set(
       options.cacheKey,
-      config.cacheClone !== false ? cloneResponse(settled) : settled,
+      cacheEntry,
       ttl,
     );
   }
@@ -247,6 +265,15 @@ async function safeInvokeErrorHook(config: CorriereRequestConfig, error: unknown
     await config.hooks.onRequestError(error);
   } catch {
     // Intentionally swallowed; see above.
+  }
+}
+
+/** Deletes every credential header, whatever its casing, from a flattened header set. */
+function stripCredentialHeaders(flatHeaders: FlatHeaders): void {
+  for (const key of Object.keys(flatHeaders)) {
+    if (CREDENTIAL_HEADERS.includes(key.toLowerCase())) {
+      delete flatHeaders[key];
+    }
   }
 }
 
@@ -280,7 +307,7 @@ async function executeFetchRequest(
     fetchOptions.body = requestData as BodyInit;
   }
 
-  if (config.withCredentials) {
+  if (config.withCredentials && !(config as InternalConfig)._stripCredentials) {
     fetchOptions.credentials = 'include';
   }
 
@@ -356,10 +383,6 @@ export function createRegistry(): RequestRegistry {
  */
 const defaultRegistry = createRegistry();
 
-export function __activeRequestsSize(registry: RequestRegistry = defaultRegistry): number {
-  return registry.inflight.size;
-}
-
 /**
  * Ceiling on tracked in-flight requests.
  *
@@ -380,33 +403,11 @@ function trackActiveRequest(registry: RequestRegistry, key: string, record: InFl
   }
 }
 
-function createCanceledError(config: CorriereRequestConfig): CorriereError {
-  const reason = config.signal?.reason;
-  const message =
-    reason instanceof Error
-      ? reason.message
-      : typeof reason === 'string'
-        ? reason
-        : 'Request aborted';
-  const err = new CorriereError(message, CorriereError.ERR_CANCELED, config, null, null);
-  if (reason instanceof Error) {
-    err.cause = reason;
-  }
-  return err;
-}
-
 export default async function dispatchRequest(
   config: CorriereRequestConfig,
   registry: RequestRegistry = defaultRegistry,
 ): Promise<CorriereResponse> {
-  const fullURL =
-    (config as InternalConfig)._builtUrl ||
-    buildURL(
-      config.url ?? '',
-      config.baseURL,
-      config.params as Record<string, unknown> | undefined,
-      config.paramsSerializer,
-    );
+  const fullURL = (config as InternalConfig)._builtUrl || resolveURL(config);
 
   assertAllowedProtocol(fullURL, config);
 
@@ -415,28 +416,34 @@ export default async function dispatchRequest(
   }
 
   const flatHeaders = flattenHeaders(config.headers as HeadersConfig | undefined, config.method);
-  setBasicAuth(config, flatHeaders);
+  if ((config as InternalConfig)._stripCredentials) {
+    stripCredentialHeaders(flatHeaders);
+  } else {
+    setBasicAuth(config, flatHeaders);
+  }
 
   const isGet = (config.method || 'GET').toUpperCase() === 'GET';
+  // A stream body can be read exactly once and cannot be cloned, so a stream response is
+  // never cached (a replay would hand back an already-drained stream) and never deduped
+  // (every caller would share one stream that only the first could read).
+  const cacheable = isGet && config.responseType !== 'stream';
   const cacheKey =
-    isGet && (config.cache || config.dedupe) ? buildCacheKey(config, fullURL, flatHeaders) : '';
+    cacheable && (config.cache || config.dedupe) ? buildCacheKey(config, fullURL, flatHeaders) : '';
   const dedupeKey = cacheKey && buildDedupeKey(config, cacheKey);
 
-  if (isGet && config.cache) {
+  if (cacheable && config.cache) {
     const cached = await resolveCacheProvider(config.cache, registry).get(cacheKey);
     if (cached) {
-      const clonedCached = config.cacheClone !== false ? cloneResponse(cached) : cached;
-      const cachedView: CorriereResponse = {
-        ...clonedCached,
-        config,
-      };
       try {
-        // Replayed responses go through validateStatus too, so a caller that tightened
-        // validateStatus is not handed a status it would have rejected on a live request.
-        const settled = await settleResponse(cachedView, config);
-        // A caller can supply a stricter `schema` than the one active when the cache
-        // was populated, so it's re-applied on every cache hit, not just at write time.
-        await applySchema(settled, config);
+        // A replay runs this caller's transforms, validateStatus and schema, exactly as a
+        // live response would — see `finalizeAndSettle`.
+        const settled = await finalizeAndSettle(cached, config, {
+          cacheable,
+          cacheKey,
+          registry,
+          cloneRaw: true,
+          writeCache: false,
+        });
         if (config.hooks?.onRequestResponse) {
           await config.hooks.onRequestResponse(settled);
         }
@@ -453,7 +460,7 @@ export default async function dispatchRequest(
     }
   }
 
-  if (isGet && config.dedupe) {
+  if (cacheable && config.dedupe) {
     let record = registry.inflight.get(dedupeKey);
     const isNew = !record;
     if (isNew) {
@@ -486,7 +493,7 @@ export default async function dispatchRequest(
               detachSubscriber(sub);
               try {
                 const settled = await finalizeAndSettle(shared, sub.config, {
-                  isGet,
+                  cacheable,
                   cacheKey,
                   registry,
                   cloneRaw: true,
@@ -536,13 +543,19 @@ export default async function dispatchRequest(
 
       if (config.signal) {
         if (config.signal.aborted) {
-          reject(createCanceledError(config));
+          reject(CorriereError.canceled(config.signal?.reason, config));
           return;
         }
         const onAbort = () => {
           record!.subscribers.delete(subscriber);
-          reject(createCanceledError(config));
+          reject(CorriereError.canceled(config.signal?.reason, config));
           if (record!.subscribers.size === 0) {
+            // Unregistered *before* aborting. The aborted fetch only rejects a tick or more
+            // later, and until then a new caller for the same key would join this doomed
+            // record and receive a cancellation it never asked for.
+            if (registry.inflight.get(dedupeKey) === record) {
+              registry.inflight.delete(dedupeKey);
+            }
             record!.abortController.abort(config.signal!.reason);
           }
         };
@@ -559,7 +572,7 @@ export default async function dispatchRequest(
   try {
     const shared = await promise;
     const settled = await finalizeAndSettle(shared, config, {
-      isGet,
+      cacheable,
       cacheKey,
       registry,
       cloneRaw: false,
@@ -580,14 +593,7 @@ export default async function dispatchRequest(
 function cloneResponse(response: CorriereResponse): CorriereResponse {
   let clonedData = response.data;
   if (response.data && typeof response.data === 'object') {
-    if (
-      !(typeof File !== 'undefined' && response.data instanceof File) &&
-      !(typeof Blob !== 'undefined' && response.data instanceof Blob) &&
-      !(typeof ArrayBuffer !== 'undefined' && response.data instanceof ArrayBuffer) &&
-      !(typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(response.data)) &&
-      !(typeof Buffer !== 'undefined' && Buffer.isBuffer(response.data)) &&
-      !(typeof ReadableStream !== 'undefined' && response.data instanceof ReadableStream)
-    ) {
+    if (!isBinaryData(response.data) && !isReadableStream(response.data)) {
       try {
         if (typeof structuredClone === 'function') {
           clonedData = structuredClone(response.data);

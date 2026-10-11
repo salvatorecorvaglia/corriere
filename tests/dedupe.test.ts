@@ -157,9 +157,10 @@ describe('dedupe fan-out', () => {
   /**
    * Every subscriber shares one cache key, so a per-subscriber write meant N redundant
    * writes whose winner depended on hook timing. Only the caller that started the request
-   * writes, which also keeps the stored entry's transforms deterministic.
+   * writes, and what it writes is the server's data — no caller's transforms — so a later
+   * cache hit applies its own.
    */
-  it('writes the cache once, using the first caller’s transforms', async () => {
+  it('writes the cache once, with the server’s untransformed data', async () => {
     serve(200, { value: 1 });
     const cache = new MemoryCache();
     const setSpy = vi.spyOn(cache, 'set');
@@ -172,7 +173,8 @@ describe('dedupe fan-out', () => {
 
     expect(fetchCalls).toBe(1);
     expect(setSpy).toHaveBeenCalledTimes(1);
-    expect(setSpy.mock.calls[0][1]).toMatchObject({ data: { who: 'first' } });
+    expect(setSpy.mock.calls[0][1]).toMatchObject({ data: { value: 1 } });
+    expect(setSpy.mock.calls[0][1].data).not.toHaveProperty('who');
   });
 
   it('still gives each subscriber its own transformed copy', async () => {
@@ -351,5 +353,74 @@ describe('Deduplication independent abort signals', () => {
     // Request B should succeed normally since it was not aborted
     const resB = await pB;
     expect(resB.data).toEqual({ data: 'success' });
+  });
+});
+
+/**
+ * When every subscriber of a deduped request aborted, the record stayed in the in-flight map
+ * until the aborted fetch actually rejected. A caller arriving in that window — React
+ * StrictMode's mount → unmount → mount is exactly this — joined the doomed record and was
+ * handed an `ERR_CANCELED` it never asked for.
+ */
+describe('dedupe after every subscriber aborted', () => {
+  it('starts a fresh request for a new caller instead of joining the aborted one', async () => {
+    let fetchCalls = 0;
+    global.fetch = vi.fn((_url: any, init: RequestInit) => {
+      fetchCalls++;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(
+          () =>
+            resolve(
+              new Response(JSON.stringify({ ok: true }), {
+                headers: { 'content-type': 'application/json' },
+              }),
+            ),
+          10,
+        );
+        init.signal?.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(init.signal!.reason);
+        });
+      });
+    }) as any;
+
+    const client = new Corriere();
+    const controller = new AbortController();
+    const first = client.get('https://api.test.com/strict', {
+      dedupe: true,
+      signal: controller.signal,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    controller.abort();
+    const second = client.get('https://api.test.com/strict', { dedupe: true });
+
+    await expect(first).rejects.toMatchObject({ code: 'ERR_CANCELED' });
+    await expect(second).resolves.toMatchObject({ data: { ok: true } });
+    expect(fetchCalls).toBe(2);
+  });
+});
+
+/**
+ * A `ReadableStream` cannot be cloned, so deduping a stream request handed every caller the
+ * same stream object — only the first could ever read it.
+ */
+describe('dedupe does not apply to stream responses', () => {
+  it('gives each concurrent stream caller its own body', async () => {
+    let fetchCalls = 0;
+    global.fetch = vi.fn(() => {
+      fetchCalls++;
+      return Promise.resolve(new Response('a\nb\n', { headers: { 'content-type': 'text/plain' } }));
+    }) as any;
+
+    const client = new Corriere();
+    const [r1, r2] = await Promise.all([
+      client.get('https://api.test.com/s', { dedupe: true, responseType: 'stream' }),
+      client.get('https://api.test.com/s', { dedupe: true, responseType: 'stream' }),
+    ]);
+
+    expect(r1.data).not.toBe(r2.data);
+    expect(fetchCalls).toBe(2);
+    expect(await new Response(r1.data).text()).toBe('a\nb\n');
+    expect(await new Response(r2.data).text()).toBe('a\nb\n');
   });
 });

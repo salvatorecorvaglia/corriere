@@ -1,10 +1,4 @@
-import {
-  ECONNABORTED,
-  ERR_BAD_OPTION,
-  ERR_CANCELED,
-  ERR_NETWORK,
-  ETIMEDOUT,
-} from '../constants/errorCodes';
+import { ERR_BAD_OPTION, ERR_CANCELED, ERR_NETWORK, ETIMEDOUT } from '../constants/errorCodes';
 import type {
   CorriereError,
   CorriereRequestConfig,
@@ -33,7 +27,7 @@ function defaultRetryCondition(error: any): boolean {
   // get an answer — and it is the single most common reason to want a retry. It was
   // previously excluded, which made `{ timeout, retry }` together look configured but do
   // nothing. Cancellation stays non-retryable above: the caller asked to stop.
-  if (error.code === ETIMEDOUT || error.code === ECONNABORTED) {
+  if (error.code === ETIMEDOUT) {
     return true;
   }
 
@@ -46,6 +40,45 @@ function defaultRetryCondition(error: any): boolean {
   }
 
   return false;
+}
+
+/**
+ * Whether `config.retryMethods` lets this request be retried. A `429` always may: the server
+ * refused the request without processing it, so sending it again cannot apply it twice.
+ */
+/**
+ * The methods retried after a failure whose outcome is unknown when `retryMethods` is not
+ * set: the idempotent ones, which the server can safely receive twice. `POST` and `PATCH`
+ * are left out, because a retry after a dropped connection or a 5xx can apply them twice.
+ */
+export const DEFAULT_RETRY_METHODS: readonly string[] = Object.freeze([
+  'get',
+  'head',
+  'options',
+  'put',
+  'delete',
+]);
+
+function isMethodRetryable(config: CorriereRequestConfig, is429: boolean): boolean {
+  if (is429) return true;
+  const allowed = config.retryMethods ?? DEFAULT_RETRY_METHODS;
+  const method = (config.method || 'get').toLowerCase();
+  return allowed.some((m) => m.toLowerCase() === method);
+}
+
+/**
+ * A `Retry-After` header as a delay in milliseconds, or `null` when absent or unreadable.
+ * The header is either whole seconds or an HTTP date; only a plain integer counts as
+ * seconds, so a date is never misread by its leading digits.
+ */
+function parseRetryAfter(value: unknown): number | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  // A negative count is malformed but unambiguous: retry now rather than wait.
+  if (/^\s*-?\d+\s*$/.test(raw)) return Math.max(0, Number.parseInt(raw, 10) * 1000);
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return null;
+  return Math.max(0, date.getTime() - Date.now());
 }
 
 function calculateDelay(attempt: number, baseDelay: number, maxDelay = 30000): number {
@@ -117,7 +150,10 @@ async function retryRequest(
 
       const is429 = (error as any).response?.status === 429;
       const attemptLimit = is429 && config.retryOn429 ? Math.max(maxRetries, 3) : maxRetries;
-      const shouldRetry = attempt < attemptLimit && retryCondition(error as CorriereError);
+      const shouldRetry =
+        attempt < attemptLimit &&
+        isMethodRetryable(config, is429) &&
+        retryCondition(error as CorriereError);
 
       if (!shouldRetry) {
         throw error;
@@ -142,24 +178,14 @@ async function retryRequest(
 
       let delay = calculateDelay(attempt, retryDelay, config.maxRetryDelay ?? 30000);
 
-      if (config.retryOn429 && (error as any).response?.status === 429) {
+      // `Retry-After` is how a 429 or a 503 says when to come back, so it replaces the
+      // backoff for either — capped by `maxRetryDelay` like any other delay.
+      const status = (error as any).response?.status;
+      if (status === 429 || status === 503) {
         // `parseHeaders` lower-cases every key, so only the lower-case lookup can match.
-        const headers = (error as any).response?.headers;
-        const retryAfterStr = headers?.['retry-after'];
-        if (retryAfterStr) {
-          const parsed = Number.parseInt(retryAfterStr, 10);
-          if (!Number.isNaN(parsed)) {
-            delay = Math.max(0, parsed * 1000);
-          } else {
-            const date = new Date(retryAfterStr);
-            if (!Number.isNaN(date.getTime())) {
-              delay = Math.max(0, date.getTime() - Date.now());
-            }
-          }
-          const maxDelay = config.maxRetryDelay ?? 30000;
-          if (delay > maxDelay) {
-            delay = maxDelay;
-          }
+        const retryAfter = parseRetryAfter((error as any).response?.headers?.['retry-after']);
+        if (retryAfter !== null) {
+          delay = Math.min(retryAfter, config.maxRetryDelay ?? 30000);
         }
       }
 
@@ -175,26 +201,14 @@ async function retryRequest(
       try {
         await sleep(delay, { signal: config.signal });
       } catch (sleepError) {
+        // An `Error` or string reason describes the cancellation best; otherwise the sleep's
+        // own rejection does.
         const reason = config.signal?.reason;
-        const message =
-          reason instanceof Error
-            ? reason.message
-            : typeof reason === 'string'
-              ? reason
-              : (sleepError as Error).message || 'Request aborted';
-        const err = new CorriereErrorClass(
-          message,
-          ERR_CANCELED,
+        throw CorriereErrorClass.canceled(
+          reason instanceof Error || typeof reason === 'string' ? reason : sleepError,
           config,
-          null,
-          (error as CorriereError).response ?? null,
+          { response: (error as CorriereError).response ?? null },
         );
-        if (reason instanceof Error) {
-          err.cause = reason;
-        } else if (sleepError instanceof Error) {
-          err.cause = sleepError;
-        }
-        throw err;
       }
     }
   }

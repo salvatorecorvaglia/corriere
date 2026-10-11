@@ -117,6 +117,13 @@ describe('redirect handling', () => {
     expect(calls[1].body).toBeUndefined();
   });
 
+  it('keeps HEAD as HEAD across a 303', async () => {
+    serve([{ status: 303, location: 'https://api.test.com/result' }, { status: 200 }]);
+    await dispatchRequest(base({ method: 'head', maxRedirects: 3 }));
+    expect(calls[0].method).toBe('HEAD');
+    expect(calls[1].method).toBe('HEAD');
+  });
+
   it('preserves method and body across a 307', async () => {
     serve([{ status: 307, location: 'https://api.test.com/result' }, { status: 200 }]);
     await dispatchRequest(

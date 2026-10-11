@@ -71,7 +71,13 @@ export function logResponse(response: CorriereResponse): void {
 
   const parts: string[] = [`🔔 [Corriere] ← ${statusIcon} ${status} ${statusText} (${duration})`];
 
-  if (response.data) {
+  // The server's `content-length` is exact and free; estimating from the data means
+  // serializing the whole body, so it is only the fallback.
+  const lengthHeader = response.headers?.['content-length'];
+  const declared = Number(Array.isArray(lengthHeader) ? lengthHeader[0] : lengthHeader);
+  if (lengthHeader !== undefined && Number.isFinite(declared) && declared >= 0) {
+    parts.push(`   Size: ~${formatBytes(declared)}`);
+  } else if (response.data) {
     try {
       const size =
         typeof response.data === 'string'

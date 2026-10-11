@@ -90,18 +90,13 @@ for (const [label, client] of [
 console.log('\nsubpath exports');
 
 /**
- * The exports map uses wildcards, so a `*` pattern cannot be loaded as written. Each
- * wildcard is probed through representative modules instead — one per group, chosen
- * because something outside the package actually imports them. Every name here must
- * resolve through the published map, not just exist on disk.
+ * Probe modules for wildcard subpaths, keyed by pattern. A `*` pattern cannot be loaded as
+ * written, so each one is checked through representative names listed here. The package
+ * currently exports only its root, so there are none; a wildcard added to
+ * package.json#exports without a probe list here fails verification rather than going
+ * unchecked.
  */
-const WILDCARD_PROBES = {
-  './core/*': ['corriereError', 'buildURL', 'mergeConfig', 'request', 'retry', 'protocol'],
-  './helpers/*': ['rateLimiter', 'debug', 'parseHeaders', 'settle', 'transformData', 'memoryCache'],
-  './interceptors/*': ['interceptorManager'],
-  './constants/*': ['errorCodes'],
-  './defaults/*': ['index', 'transforms'],
-};
+const WILDCARD_PROBES = {};
 
 /**
  * Substitutes a wildcard target the way Node does. Node allows a single `*` per pattern,
@@ -156,6 +151,35 @@ for (const [subpath, conditions] of Object.entries(pkg.exports)) {
       ok(`import ${name}`);
     } catch (err) {
       fail(`import ${name}`, err);
+    }
+  }
+}
+
+console.log('\nencapsulation');
+
+/**
+ * Resolved by package name, the way a consumer imports it, through Node's self-reference
+ * support — so these checks exercise the real exports map. Only the root may resolve;
+ * internal modules are not part of the public API.
+ */
+try {
+  require.resolve(pkg.name);
+  await import.meta.resolve(pkg.name);
+  ok(`${pkg.name} resolves through package.json#exports`);
+} catch (err) {
+  fail(`${pkg.name} resolves through package.json#exports`, err);
+}
+
+for (const internal of ['core/request', 'helpers/memoryCache', 'src/index.ts', 'esm/index.js']) {
+  const specifier = `${pkg.name}/${internal}`;
+  try {
+    require.resolve(specifier);
+    fail(`${specifier} is not exported`, new Error('it resolved; only the package root should'));
+  } catch (err) {
+    if (err?.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+      ok(`${specifier} is not exported`);
+    } else {
+      fail(`${specifier} is not exported`, err);
     }
   }
 }

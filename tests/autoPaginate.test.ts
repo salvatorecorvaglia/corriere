@@ -569,3 +569,189 @@ describe('autoPaginate termination guards', () => {
     expect(seen).toEqual([1, 2, 3]);
   });
 });
+
+/**
+ * Credentials used to be stripped from the per-call config only. `request()` then merged the
+ * instance defaults back in, and request interceptors ran afterwards, so an instance-level
+ * `Authorization` header, instance `auth`, an interceptor-added token and `withCredentials`
+ * all reached the foreign host a server-chosen `next` link pointed at.
+ */
+describe('autoPaginate cross-origin credential stripping', () => {
+  type Seen = { url: string; authorization: string | null; credentials?: RequestCredentials };
+
+  function serveCrossOrigin(): Seen[] {
+    const seen: Seen[] = [];
+    global.fetch = vi.fn((url: any, init: RequestInit) => {
+      seen.push({
+        url: String(url),
+        authorization: new Headers(init.headers).get('authorization'),
+        credentials: init.credentials,
+      });
+      return Promise.resolve(
+        String(url).startsWith('https://api.test.com')
+          ? jsonResponse({ items: [1], next: 'https://other.test.com/p2' })
+          : jsonResponse({ items: [2], next: null }),
+      );
+    }) as any;
+    return seen;
+  }
+
+  async function drain(client: Corriere, config: Record<string, unknown> = {}) {
+    const items: unknown[] = [];
+    for await (const item of client.autoPaginate('https://api.test.com/p1', {
+      allowedPaginateHosts: ['other.test.com'],
+      ...config,
+    })) {
+      items.push(item);
+    }
+    return items;
+  }
+
+  it('drops an instance-level Authorization header on the foreign hop', async () => {
+    const seen = serveCrossOrigin();
+    const client = new Corriere({ headers: { Authorization: 'Bearer SECRET' } });
+    expect(await drain(client)).toEqual([1, 2]);
+    expect(seen[0].authorization).toBe('Bearer SECRET');
+    expect(seen[1].url).toBe('https://other.test.com/p2');
+    expect(seen[1].authorization).toBeNull();
+  });
+
+  it('drops instance-level basic auth on the foreign hop', async () => {
+    const seen = serveCrossOrigin();
+    const client = new Corriere({ auth: { username: 'u', password: 'p' } });
+    await drain(client);
+    expect(seen[0].authorization).toMatch(/^Basic /);
+    expect(seen[1].authorization).toBeNull();
+  });
+
+  it('drops a token added by a request interceptor on the foreign hop', async () => {
+    const seen = serveCrossOrigin();
+    const client = new Corriere();
+    client.interceptors.request.use((config: any) => ({
+      ...config,
+      headers: { ...config.headers, Authorization: 'Bearer FROM_INTERCEPTOR' },
+    }));
+    await drain(client);
+    expect(seen[0].authorization).toBe('Bearer FROM_INTERCEPTOR');
+    expect(seen[1].authorization).toBeNull();
+  });
+
+  it('stops sending cookies (withCredentials) on the foreign hop', async () => {
+    const seen = serveCrossOrigin();
+    const client = new Corriere({ withCredentials: true });
+    await drain(client);
+    expect(seen[0].credentials).toBe('include');
+    expect(seen[1].credentials).not.toBe('include');
+  });
+
+  it('keeps credentials on same-origin pages', async () => {
+    const seen: Seen[] = [];
+    global.fetch = vi.fn((url: any, init: RequestInit) => {
+      seen.push({
+        url: String(url),
+        authorization: new Headers(init.headers).get('authorization'),
+      });
+      return Promise.resolve(
+        String(url).endsWith('/p1')
+          ? jsonResponse({ items: [1], next: 'https://api.test.com/p2' })
+          : jsonResponse({ items: [2], next: null }),
+      );
+    }) as any;
+    const client = new Corriere({ headers: { Authorization: 'Bearer SECRET' } });
+    for await (const _ of client.autoPaginate('https://api.test.com/p1')) {
+      // drain
+    }
+    expect(seen.map((s) => s.authorization)).toEqual(['Bearer SECRET', 'Bearer SECRET']);
+  });
+});
+
+/**
+ * `autoPaginate` read its options from the per-call config only, so the same options set
+ * on the instance were silently ignored.
+ */
+describe('autoPaginate honours instance-level options', () => {
+  it('uses an instance-level paginateItems selector', async () => {
+    servePages({
+      'https://api.test.com/p1': { rows: [1, 2], next: 'https://api.test.com/p2' },
+      'https://api.test.com/p2': { rows: [3], next: null },
+    });
+    const client = new Corriere({ paginateItems: 'rows' });
+    const items: number[] = [];
+    for await (const item of client.autoPaginate<number>('https://api.test.com/p1')) {
+      items.push(item);
+    }
+    expect(items).toEqual([1, 2, 3]);
+  });
+
+  it('uses an instance-level maxPages', async () => {
+    let n = 0;
+    global.fetch = vi.fn(() => {
+      n++;
+      return Promise.resolve(jsonResponse({ items: [n], next: `https://api.test.com/p${n + 1}` }));
+    }) as any;
+    const client = new Corriere({ maxPages: 2 });
+    const iterate = async () => {
+      for await (const _ of client.autoPaginate('https://api.test.com/p1')) {
+        // drain
+      }
+    };
+    await expect(iterate()).rejects.toThrow(/maxPages \(2\)/);
+    expect(n).toBe(2);
+  });
+
+  it('uses an instance-level allowedPaginateHosts', async () => {
+    servePages({
+      'https://api.test.com/p1': { items: [1], next: 'https://other.test.com/p2' },
+      'https://other.test.com/p2': { items: [2], next: null },
+    });
+    const client = new Corriere({ allowedPaginateHosts: ['other.test.com'] });
+    const items: number[] = [];
+    for await (const item of client.autoPaginate<number>('https://api.test.com/p1')) {
+      items.push(item);
+    }
+    expect(items).toEqual([1, 2]);
+  });
+
+  it('lets a per-call option override the instance one', async () => {
+    servePages({
+      'https://api.test.com/p1': { rows: [1], other: [9], next: null },
+    });
+    const client = new Corriere({ paginateItems: 'rows' });
+    const items: number[] = [];
+    for await (const item of client.autoPaginate<number>('https://api.test.com/p1', {
+      paginateItems: 'other',
+    })) {
+      items.push(item);
+    }
+    expect(items).toEqual([9]);
+  });
+});
+
+/**
+ * Two layers keep these credentials off the wire: `withoutCredentials` scrubs the per-call
+ * config (grouped headers included), and the `_stripCredentials` flag strips the final
+ * headers at the transport. This test asserts the outcome, so it holds while either layer
+ * works — it cannot single one out.
+ */
+describe('autoPaginate cross-origin stripping of grouped headers', () => {
+  it('drops credentials nested in per-method header groups of the per-call config', async () => {
+    const seen: Array<string | null> = [];
+    global.fetch = vi.fn((url: any, init: RequestInit) => {
+      seen.push(new Headers(init.headers).get('authorization'));
+      return Promise.resolve(
+        String(url).startsWith('https://api.test.com')
+          ? jsonResponse({ items: [1], next: 'https://other.test.com/p2' })
+          : jsonResponse({ items: [2], next: null }),
+      );
+    }) as any;
+
+    const client = new Corriere();
+    for await (const _ of client.autoPaginate('https://api.test.com/p1', {
+      allowedPaginateHosts: ['other.test.com'],
+      headers: { common: { Authorization: 'Bearer A' }, get: { 'X-Keep': 'yes' } },
+    })) {
+      // drain
+    }
+    expect(seen).toEqual(['Bearer A', null]);
+  });
+});

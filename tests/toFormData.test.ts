@@ -78,7 +78,6 @@ describe('toFormData safety in environments without File or Blob', () => {
       const mockForm = new MockFormData() as any;
 
       const result = toFormData(data, mockForm);
-      expect(result).toBeDefined();
       expect((result as any).data).toEqual({
         name: 'test',
         'nested.value': 42,
@@ -108,7 +107,6 @@ describe('toFormData binary data handling', () => {
     const mockForm = new MockFormData() as any;
 
     const result = toFormData(data, mockForm);
-    expect(result).toBeDefined();
     expect((result as any).data.name).toBe('test');
     expect((result as any).data['nested.buffer']).toBeUndefined();
   });
@@ -189,7 +187,45 @@ describe('toFormData circular reference handling', () => {
     obj.self = obj;
 
     const result = toFormData(obj);
-    expect(result).toBeDefined();
-    expect(result.append).toBeDefined();
+    // The fields are still emitted; only the back-reference is dropped.
+    expect(result.get('name')).toBe('parent');
+    expect(result.has('self')).toBe(false);
+    expect(result.has('self.name')).toBe(false);
+  });
+});
+
+describe('formSerializer set on the instance', () => {
+  it('is honoured by postForm when the call does not set one', async () => {
+    let body: FormData | undefined;
+    global.fetch = vi.fn((_url: any, init: any) => {
+      body = init.body;
+      return Promise.resolve(
+        new Response('{}', { headers: { 'content-type': 'application/json' } }),
+      );
+    }) as any;
+
+    const client = new Corriere({ formSerializer: { brackets: true } });
+    await client.postForm('https://api.test.com/submit', { user: { id: 1 } });
+    expect(body!.has('user[id]')).toBe(true);
+    expect(body!.has('user.id')).toBe(false);
+  });
+
+  it('is overridden by a per-call formSerializer', async () => {
+    let body: FormData | undefined;
+    global.fetch = vi.fn((_url: any, init: any) => {
+      body = init.body;
+      return Promise.resolve(
+        new Response('{}', { headers: { 'content-type': 'application/json' } }),
+      );
+    }) as any;
+
+    const client = new Corriere({ formSerializer: { brackets: true } });
+    await client.putForm(
+      'https://api.test.com/submit',
+      { user: { id: 1 } },
+      { formSerializer: { brackets: false } },
+    );
+    expect(body!.has('user.id')).toBe(true);
+    expect(body!.has('user[id]')).toBe(false);
   });
 });

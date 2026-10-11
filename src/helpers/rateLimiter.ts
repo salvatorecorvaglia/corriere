@@ -1,4 +1,3 @@
-import { ERR_CANCELED } from '../constants/errorCodes';
 import CorriereError from '../core/corriereError';
 import type { CorriereRequestConfig, CorriereResponse, RateLimiter } from '../types';
 
@@ -7,19 +6,9 @@ interface QueueItem {
   reject: (reason: Error) => void;
 }
 
-/**
- * Wraps a cancellation reason as an `CorriereError` carrying `ERR_CANCELED`.
- *
- * Rejecting with a bare `Error` made aborts that happened while a request was still queued
- * invisible to `corriere.isCancel()` and to `defaultRetryCondition` (which keys off
- * `error.code`), so a cancelled request looked like an unclassified failure.
- */
-function cancelledError(reason: unknown, fallback: string): CorriereError {
-  const message =
-    reason instanceof Error ? reason.message : typeof reason === 'string' ? reason : fallback;
-  const err = new CorriereError(message, ERR_CANCELED, null, null, null);
-  if (reason instanceof Error) err.cause = reason;
-  return err;
+/** Cancellation from the limiter carries no request config: it happens before dispatch. */
+function cancelledError(reason: unknown, fallbackMessage: string): CorriereError {
+  return CorriereError.canceled(reason, null, { fallbackMessage });
 }
 
 export function createRateLimiter(

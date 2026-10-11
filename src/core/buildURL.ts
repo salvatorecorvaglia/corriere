@@ -1,5 +1,7 @@
+import { ERR_BAD_OPTION } from '../constants/errorCodes';
 import { withCycleGuard } from '../helpers/cycleGuard';
-import type { ParamsSerializer } from '../types';
+import type { CorriereRequestConfig, ParamsSerializer } from '../types';
+import CorriereError from './corriereError';
 
 function serializeParams(
   params: Record<string, unknown>,
@@ -128,6 +130,51 @@ export default function buildURL(
   }
 
   return fullURL;
+}
+
+/**
+ * The full URL a config will be sent to. Every place that needs it goes through here, so
+ * `allowAbsoluteUrls` is enforced for requests, `getUri` and cache keys alike.
+ */
+/**
+ * Whether an absolute `url` stays inside `baseURL`: same origin, and a path at or below the
+ * base path. Both are parsed first, so `..` segments are resolved before the comparison and
+ * `/v10` does not count as being under `/v1`. A `baseURL` that cannot be parsed on its own
+ * (a relative one, such as `/api`) contains nothing absolute.
+ */
+function isWithinBaseURL(url: string, baseURL: string): boolean {
+  try {
+    const target = new URL(url);
+    const base = new URL(baseURL);
+    if (target.origin !== base.origin) return false;
+    const basePath = base.pathname.endsWith('/') ? base.pathname : `${base.pathname}/`;
+    return target.pathname === base.pathname || target.pathname.startsWith(basePath);
+  } catch {
+    return false;
+  }
+}
+
+export function resolveURL(config: CorriereRequestConfig): string {
+  const url = config.url ?? '';
+  // With a `baseURL`, an absolute `url` must stay inside it unless explicitly allowed, so a
+  // client built for one API cannot be pointed elsewhere by input that reaches `url`.
+  if (
+    config.allowAbsoluteUrls !== true &&
+    config.baseURL &&
+    isAbsoluteURL(url) &&
+    !isWithinBaseURL(url, config.baseURL)
+  ) {
+    throw new CorriereError(
+      `Absolute URL "${url}" is outside baseURL "${config.baseURL}". Pass a path relative ` +
+        'to baseURL, or set allowAbsoluteUrls to true to let an absolute url override ' +
+        'baseURL.',
+      ERR_BAD_OPTION,
+      config,
+      null,
+      null,
+    );
+  }
+  return buildURL(url, config.baseURL, config.params, config.paramsSerializer);
 }
 
 export { combineURLs, isAbsoluteURL, serializeParams };

@@ -289,3 +289,82 @@ describe('Cache response data mutations protection', () => {
     expect(res2.data).toEqual({ items: [1, 2] });
   });
 });
+
+/**
+ * The cache used to be written *after* `transformResponse`, and cache hits never ran it, so
+ * the first caller's transform leaked into every later caller's data. The cache now stores
+ * what the server sent and each caller's own `transformResponse` runs on the way out, the
+ * same as on a live request.
+ */
+describe('cache and per-call transformResponse', () => {
+  function serveJson(body: unknown) {
+    let calls = 0;
+    global.fetch = vi.fn(() => {
+      calls++;
+      return Promise.resolve(
+        new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } }),
+      );
+    }) as any;
+    return () => calls;
+  }
+
+  it('does not hand one caller’s transformed data to another caller', async () => {
+    const calls = serveJson({ v: 1 });
+    const client = new Corriere();
+    const first = await client.get('https://api.test.com/t', {
+      cache: true,
+      transformResponse: (d: any) => ({ ...d, transformed: true }),
+    });
+    const second = await client.get('https://api.test.com/t', { cache: true });
+
+    expect(first.data).toEqual({ v: 1, transformed: true });
+    expect(second.data).toEqual({ v: 1 });
+    expect(calls()).toBe(1);
+  });
+
+  it('applies the caller’s own transformResponse to a cache hit', async () => {
+    const calls = serveJson({ v: 1 });
+    const client = new Corriere();
+    await client.get('https://api.test.com/t', { cache: true });
+    const hit = await client.get('https://api.test.com/t', {
+      cache: true,
+      transformResponse: (d: any) => ({ ...d, mine: true }),
+    });
+
+    expect(hit.data).toEqual({ v: 1, mine: true });
+    expect(calls()).toBe(1);
+  });
+
+  it('is not corrupted by a transform that mutates its input in place', async () => {
+    serveJson({ v: 1 });
+    const client = new Corriere();
+    await client.get('https://api.test.com/t', {
+      cache: true,
+      transformResponse: (d: any) => {
+        d.mutated = true;
+        return d;
+      },
+    });
+    const hit = await client.get('https://api.test.com/t', { cache: true });
+    expect(hit.data).toEqual({ v: 1 });
+  });
+
+  it('does not keep the caller’s config alive inside the cache entry', async () => {
+    serveJson({ v: 1 });
+    const cache = new MemoryCache();
+    const setSpy = vi.spyOn(cache, 'set');
+    const client = new Corriere();
+    await client.get('https://api.test.com/t', { cache, data: { big: 'payload' } });
+
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    expect(setSpy.mock.calls[0][1]).not.toHaveProperty('config');
+  });
+
+  it('versions the default cache key so entries written by older releases are ignored', async () => {
+    serveJson({ v: 1 });
+    const cache = new MemoryCache();
+    const setSpy = vi.spyOn(cache, 'set');
+    await new Corriere().get('https://api.test.com/t', { cache });
+    expect(setSpy.mock.calls[0][0]).toMatch(/^v2:/);
+  });
+});

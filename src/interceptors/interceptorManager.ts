@@ -1,7 +1,11 @@
-import type { InterceptorHandler, InterceptorOptions, TransformFunction } from '../types';
+import type { InterceptorHandler, InterceptorOptions } from '../types';
 
-export class InterceptorManager {
-  private _handlers: Map<number, InterceptorHandler>;
+/**
+ * A list of interceptors. `V` is the value each receives — the config for request
+ * interceptors, the response for response interceptors — and `R` what it may return.
+ */
+export class InterceptorManager<V = any, R = V> {
+  private _handlers: Map<number, InterceptorHandler<V, R>>;
   private _nextId: number;
 
   constructor() {
@@ -10,8 +14,8 @@ export class InterceptorManager {
   }
 
   use(
-    fulfilled: TransformFunction | null,
-    rejected?: ((error: unknown) => unknown) | null,
+    fulfilled?: ((value: V) => R | Promise<R>) | null,
+    rejected?: ((error: any) => unknown) | null,
     options: InterceptorOptions = {},
   ): number {
     const id = this._nextId++;
@@ -32,7 +36,7 @@ export class InterceptorManager {
     this._handlers.clear();
   }
 
-  forEach(fn: (handler: InterceptorHandler) => void): void {
+  forEach(fn: (handler: InterceptorHandler<V, R>) => void): void {
     for (const handler of this._handlers.values()) {
       fn(handler);
     }
@@ -47,9 +51,9 @@ export class InterceptorManager {
    * ejected IDs appear as `null`. Reading this builds a fresh array each time —
    * prefer `forEach`/`size` in hot paths.
    */
-  get handlers(): Array<InterceptorHandler | null> {
+  get handlers(): Array<InterceptorHandler<V, R> | null> {
     const max = this._nextId;
-    const out: Array<InterceptorHandler | null> = new Array(max);
+    const out: Array<InterceptorHandler<V, R> | null> = new Array(max);
     out.fill(null);
     for (const [id, handler] of this._handlers.entries()) {
       if (id < max) {

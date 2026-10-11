@@ -240,17 +240,13 @@ describe('Corriere streaming', () => {
     expect(items).toEqual([{ text: 'café' }]);
   });
 
-  it('treats interleaved SSE event:/id: fields as plain text lines, not as part of data:', async () => {
-    // The parser has no special handling for `event:`/`id:` fields — it only recognizes
-    // `data:`-prefixed lines and bare JSON lines. This pins down that documented behavior:
-    // non-`data:` fields are yielded as their own (trimmed) string chunks rather than being
-    // attached to the `data:` payload or silently dropped.
+  it('treats event:/id: lines as plain text when the response is not text/event-stream', async () => {
+    // Without an SSE content type the body is read as line-delimited text, so these lines
+    // are ordinary content. The SSE parser (below) applies only to text/event-stream.
     const encoder = new TextEncoder();
     const mockStream = new ReadableStream({
       start(controller) {
-        controller.enqueue(
-          encoder.encode('event: message\nid: 1\ndata: {"val": 1}\n\ndata: {"val": 2}\n'),
-        );
+        controller.enqueue(encoder.encode('event: message\nid: 1\ndata: {"val": 1}\n'));
         controller.close();
       },
     });
@@ -271,7 +267,72 @@ describe('Corriere streaming', () => {
       items.push(chunk);
     }
 
-    expect(items).toEqual(['event: message', 'id: 1', { val: 1 }, { val: 2 }]);
+    expect(items).toEqual(['event: message', 'id: 1', { val: 1 }]);
+  });
+});
+
+/**
+ * `text/event-stream` bodies are parsed as Server-Sent Events. The parser used to yield
+ * `event:`, `id:`, `retry:` and comment lines as if they were data, and yielded each line of
+ * a multi-line `data:` field separately instead of as one event.
+ */
+describe('stream() with a text/event-stream response', () => {
+  async function readSSE(chunks: string[]) {
+    const encoder = new TextEncoder();
+    global.fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+              controller.close();
+            },
+          }),
+          { headers: { 'content-type': 'text/event-stream; charset=utf-8' } },
+        ),
+      ),
+    ) as any;
+    const items: unknown[] = [];
+    for await (const item of new Corriere().stream('https://api.test.com/sse')) items.push(item);
+    return items;
+  }
+
+  it('yields only the data of each event, ignoring event/id/retry fields and comments', async () => {
+    const items = await readSSE([
+      ': keep-alive\n',
+      'event: update\nid: 7\nretry: 1000\ndata: {"a":1}\n\n',
+      'event: update\ndata: plain text\n\n',
+    ]);
+    expect(items).toEqual([{ a: 1 }, 'plain text']);
+  });
+
+  it('joins a multi-line data field into one event', async () => {
+    const items = await readSSE([
+      'data: {"a":\n',
+      'data: 1}\n\n',
+      'data: line one\ndata: line two\n\n',
+    ]);
+    expect(items).toEqual([{ a: 1 }, 'line one\nline two']);
+  });
+
+  it('dispatches on a blank line, even when it arrives in a later chunk', async () => {
+    const items = await readSSE(['data: {"a"', ':1}\n', '\n', 'data: 2\n\n']);
+    expect(items).toEqual([{ a: 1 }, 2]);
+  });
+
+  it('handles CRLF line endings and strips exactly one space after the colon', async () => {
+    const items = await readSSE(['data:  padded\r\n\r\n', 'data:tight\r\n\r\n']);
+    expect(items).toEqual([' padded', 'tight']);
+  });
+
+  it('skips the [DONE] sentinel and events with no data', async () => {
+    const items = await readSSE(['event: ping\n\n', 'data: {"a":1}\n\n', 'data: [DONE]\n\n']);
+    expect(items).toEqual([{ a: 1 }]);
+  });
+
+  it('flushes a final event that is not followed by a blank line', async () => {
+    const items = await readSSE(['data: {"a":1}\n\n', 'data: {"b":2}']);
+    expect(items).toEqual([{ a: 1 }, { b: 2 }]);
   });
 });
 
@@ -362,5 +423,83 @@ describe('Plain text streaming fallback support', () => {
     }
 
     expect(items).toEqual(['raw plain line 1', 'raw plain line 2']);
+  });
+});
+
+/**
+ * With `cache: true` (typically set once on the instance) the stream object itself was
+ * cached. The second `stream()` call replayed the already-drained stream and silently
+ * yielded nothing.
+ */
+describe('stream() with caching enabled', () => {
+  it('reads the body again on a second call instead of replaying a drained stream', async () => {
+    let fetchCalls = 0;
+    global.fetch = vi.fn(() => {
+      fetchCalls++;
+      return Promise.resolve(new Response('x\ny\n', { headers: { 'content-type': 'text/plain' } }));
+    }) as any;
+
+    const client = new Corriere({ cache: true });
+    const read = async () => {
+      const out: unknown[] = [];
+      for await (const line of client.stream('https://api.test.com/feed')) out.push(line);
+      return out;
+    };
+
+    expect(await read()).toEqual(['x', 'y']);
+    expect(await read()).toEqual(['x', 'y']);
+    expect(fetchCalls).toBe(2);
+  });
+});
+
+describe('stream() with sseEvents: true', () => {
+  async function readEvents(chunks: string[], contentType = 'text/event-stream') {
+    global.fetch = vi.fn(() =>
+      Promise.resolve(new Response(chunks.join(''), { headers: { 'content-type': contentType } })),
+    ) as any;
+    const items: unknown[] = [];
+    for await (const item of new Corriere().stream('https://api.test.com/sse', {
+      sseEvents: true,
+    })) {
+      items.push(item);
+    }
+    return items;
+  }
+
+  it('yields each event with its type, parsed data and id', async () => {
+    const items = await readEvents(['event: update\nid: 1\ndata: {"a":1}\n\n', 'data: plain\n\n']);
+    expect(items).toEqual([
+      { event: 'update', data: { a: 1 }, id: '1' },
+      // The type resets to 'message' after each event; the last id carries over, per spec.
+      { event: 'message', data: 'plain', id: '1' },
+    ]);
+  });
+
+  it('attaches a retry value to the next dispatched event, even when it arrived alone', async () => {
+    const items = await readEvents(['retry: 3000\n\n', 'data: x\n\n', 'data: y\n\n']);
+    expect(items).toEqual([
+      { event: 'message', data: 'x', retry: 3000 },
+      { event: 'message', data: 'y' },
+    ]);
+  });
+
+  it('ignores a non-numeric retry and an id containing NUL', async () => {
+    const items = await readEvents(['id: ok\n\n', 'retry: soon\nid: bad\u0000id\ndata: x\n\n']);
+    expect(items).toEqual([{ event: 'message', data: 'x', id: 'ok' }]);
+  });
+
+  it('still skips comments, data-less events and [DONE]', async () => {
+    const items = await readEvents([
+      ': ping\n\n',
+      'event: noop\n\n',
+      'data: [DONE]\n\n',
+      'data: 1\n\n',
+    ]);
+    expect(items).toEqual([{ event: 'message', data: 1 }]);
+  });
+
+  it('has no effect on a body that is not text/event-stream', async () => {
+    const items = await readEvents(['{"a":1}\n', 'event: x\n'], 'application/x-ndjson');
+    expect(items).toEqual([{ a: 1 }, 'event: x']);
   });
 });

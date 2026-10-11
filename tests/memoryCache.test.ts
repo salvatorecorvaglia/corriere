@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { defaultMemoryCache, MemoryCache } from '../src/helpers/memoryCache';
+import { MemoryCache } from '../src/helpers/memoryCache';
 
 describe('MemoryCache', () => {
   let cache: MemoryCache;
@@ -79,13 +79,6 @@ describe('MemoryCache', () => {
     expect(cache.get('b')).toBeNull();
   });
 
-  it('defaultMemoryCache instance works', () => {
-    defaultMemoryCache.set('x', 99);
-    expect(defaultMemoryCache.get('x')).toBe(99);
-    defaultMemoryCache.delete('x');
-    expect(defaultMemoryCache.get('x')).toBeNull();
-  });
-
   it('updates existing key without evicting other keys or exceeding limit', () => {
     cache.set('a', 1);
     cache.set('b', 2);
@@ -140,6 +133,27 @@ describe('MemoryCache', () => {
 
     expect(cache.get('b')).toBeNull();
     expect(cache.get('a')).toBe(10);
+    expect(cache.get('c')).toBe(3);
+    expect(cache.get('d')).toBe(4);
+  });
+});
+
+/**
+ * `get` did not refresh an entry's position, so eviction was first-in-first-out: a key read
+ * on every request was evicted as soon as it was the oldest insert. Reads now count as use.
+ */
+describe('MemoryCache eviction is least-recently-used', () => {
+  it('keeps an entry that was read recently and evicts the least recently used one', () => {
+    const cache = new MemoryCache(3);
+    cache.set('a', 1);
+    cache.set('b', 2);
+    cache.set('c', 3);
+
+    expect(cache.get('a')).toBe(1);
+    cache.set('d', 4);
+
+    expect(cache.get('b')).toBeNull();
+    expect(cache.get('a')).toBe(1);
     expect(cache.get('c')).toBe(3);
     expect(cache.get('d')).toBe(4);
   });

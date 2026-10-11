@@ -8,14 +8,14 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**'],
-      // A floor just under the measured baseline (statements 91.9%, branches 85.9%,
-      // functions 95.2%, lines 93.0%) — enough to catch a real regression without being
+      // A floor just under the measured baseline (statements 96.0%, branches 90.2%,
+      // functions 97.9%, lines 97.1%) — enough to catch a real regression without being
       // brittle to minor fluctuations. Re-baseline in the same commit that moves coverage.
       thresholds: {
-        statements: 91,
-        branches: 84,
-        functions: 94,
-        lines: 92,
+        statements: 95,
+        branches: 89,
+        functions: 97,
+        lines: 96,
       },
     },
   },

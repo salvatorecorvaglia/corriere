@@ -75,8 +75,8 @@ describe('dispatchRequest (request.ts)', () => {
         headers: {},
       });
 
-      expect(response.duration).toBeDefined();
       expect(typeof response.duration).toBe('number');
+      expect(response.duration).toBeGreaterThanOrEqual(0);
     });
 
     it('applies transformResponse for JSON by default', async () => {
@@ -436,13 +436,16 @@ describe('dispatchRequest (request.ts)', () => {
         } as any),
       ) as any;
 
-      await expect(
-        dispatchRequest({ url: 'https://api.test.com/bad', method: 'get', headers: {} }),
-      ).rejects.toMatchObject({
-        isCorriereError: true,
-        code: 'ERR_BAD_RESPONSE',
-        message: expect.stringContaining('not-json-{'),
-      });
+      // The body is kept on `error.response.data`, not in the message: messages are never
+      // redacted, so a body quoted there went straight into logs.
+      const err: any = await dispatchRequest({
+        url: 'https://api.test.com/bad',
+        method: 'get',
+        headers: {},
+      }).catch((e: unknown) => e);
+      expect(err).toMatchObject({ isCorriereError: true, code: 'ERR_BAD_RESPONSE' });
+      expect(err.response.data).toBe('not-json-{');
+      expect(err.message).not.toContain('not-json-{');
     });
 
     it('dedupes concurrent GETs and clears the entry on settle', async () => {
@@ -606,18 +609,19 @@ describe('dispatchRequest (request.ts)', () => {
         headers: {},
         dedupe: true,
       } as any;
-      await expect(dispatchRequest(base)).rejects.toBeDefined();
-      await expect(dispatchRequest(base)).rejects.toBeDefined();
+      // Asserting the code, not just "it rejected": any bug that throws would satisfy that.
+      await expect(dispatchRequest(base)).rejects.toMatchObject({ code: 'ERR_NETWORK' });
+      await expect(dispatchRequest(base)).rejects.toMatchObject({ code: 'ERR_NETWORK' });
       expect(fetchCalls).toBe(2);
     });
 
     it('caps the dedupe registry to prevent unbounded growth on hung requests (M9)', async () => {
-      const { __activeRequestsSize, createRegistry } = await import('../src/core/request');
+      const { createRegistry } = await import('../src/core/request');
       const registry = createRegistry();
       // Use a fetch that never settles so cleanup-on-settle never fires.
       global.fetch = vi.fn(() => new Promise(() => {})) as any;
 
-      const before = __activeRequestsSize(registry);
+      const before = registry.inflight.size;
       // 1500 > MAX_ACTIVE_REQUESTS (1024). Unique URLs ⇒ unique dedupe keys.
       for (let i = 0; i < 1500; i++) {
         // Fire-and-forget — the promises never settle.
@@ -631,7 +635,7 @@ describe('dispatchRequest (request.ts)', () => {
           registry,
         ).catch(() => {});
       }
-      const after = __activeRequestsSize(registry);
+      const after = registry.inflight.size;
       expect(after - before).toBeLessThanOrEqual(1024);
     });
 
@@ -927,5 +931,57 @@ describe('schema validation runs after transformResponse', () => {
       },
     });
     expect(res.data).toEqual({ parsed: '5' });
+  });
+});
+
+/**
+ * Node clamps a timer delay above 2^31−1 ms to 1 ms, so a huge `timeout` — or `Infinity`,
+ * the natural way to spell "no timeout" — fired almost immediately.
+ */
+describe('timeout bounds', () => {
+  function serveAfter(ms: number) {
+    global.fetch = vi.fn(
+      (_url: any, init: any) =>
+        new Promise((resolve, reject) => {
+          const timer = setTimeout(
+            () =>
+              resolve(
+                new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } }),
+              ),
+            ms,
+          );
+          init.signal?.addEventListener('abort', () => {
+            clearTimeout(timer);
+            reject(init.signal.reason);
+          });
+        }),
+    ) as any;
+  }
+
+  it('treats timeout: Infinity as no timeout', async () => {
+    serveAfter(20);
+    const res = await dispatchRequest({
+      url: 'https://api.test.com/x',
+      method: 'get',
+      timeout: Infinity,
+    });
+    expect(res.data).toEqual({ ok: true });
+  });
+
+  it('rejects a finite timeout too large for a timer', async () => {
+    serveAfter(0);
+    await expect(
+      dispatchRequest({ url: 'https://api.test.com/x', method: 'get', timeout: 2 ** 31 }),
+    ).rejects.toMatchObject({ code: 'ERR_BAD_OPTION_VALUE' });
+  });
+
+  it('still accepts the largest valid timeout', async () => {
+    serveAfter(5);
+    const res = await dispatchRequest({
+      url: 'https://api.test.com/x',
+      method: 'get',
+      timeout: 2 ** 31 - 1,
+    });
+    expect(res.data).toEqual({ ok: true });
   });
 });

@@ -36,56 +36,6 @@
         "default": "./cjs/index.cjs"
       }
     },
-    "./core/*": {
-      "import": {
-        "types": "./esm/core/*.d.ts",
-        "default": "./esm/core/*.js"
-      },
-      "require": {
-        "types": "./cjs/core/*.d.cts",
-        "default": "./cjs/core/*.cjs"
-      }
-    },
-    "./helpers/*": {
-      "import": {
-        "types": "./esm/helpers/*.d.ts",
-        "default": "./esm/helpers/*.js"
-      },
-      "require": {
-        "types": "./cjs/helpers/*.d.cts",
-        "default": "./cjs/helpers/*.cjs"
-      }
-    },
-    "./interceptors/*": {
-      "import": {
-        "types": "./esm/interceptors/*.d.ts",
-        "default": "./esm/interceptors/*.js"
-      },
-      "require": {
-        "types": "./cjs/interceptors/*.d.cts",
-        "default": "./cjs/interceptors/*.cjs"
-      }
-    },
-    "./constants/*": {
-      "import": {
-        "types": "./esm/constants/*.d.ts",
-        "default": "./esm/constants/*.js"
-      },
-      "require": {
-        "types": "./cjs/constants/*.d.cts",
-        "default": "./cjs/constants/*.cjs"
-      }
-    },
-    "./defaults/*": {
-      "import": {
-        "types": "./esm/defaults/*.d.ts",
-        "default": "./esm/defaults/*.js"
-      },
-      "require": {
-        "types": "./cjs/defaults/*.d.cts",
-        "default": "./cjs/defaults/*.cjs"
-      }
-    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -109,12 +59,12 @@
     "verify:package": "node scripts/verify-package.mjs"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.14",
-    "@types/node": "^26.6.2",
-    "@vitest/coverage-v8": "^5.0.2",
-    "jsdom": "^30.1.1",
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "^26.6.5",
+    "@vitest/coverage-v8": "^5.0.3",
+    "jsdom": "^30.1.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^5.0.2"
+    "vitest": "^5.0.3"
   }
 }

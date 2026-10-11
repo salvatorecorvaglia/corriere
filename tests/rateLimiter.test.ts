@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import CorriereError from '../src/core/corriereError';
+import Corriere from '../src/corriere';
 import { createRateLimiter, rateLimitedRequest } from '../src/helpers/rateLimiter';
 
 describe('createRateLimiter', () => {
@@ -288,5 +289,27 @@ describe('rate limiter cancellation is a recognisable CorriereError', () => {
 
     // defaultRetryCondition keys off error.code; a bare Error was invisible to it.
     expect(err.code).toBe('ERR_CANCELED');
+  });
+});
+
+describe('rateLimiter set on a client', () => {
+  it('limits the client’s concurrent requests', async () => {
+    let active = 0;
+    let peak = 0;
+    global.fetch = vi.fn(async () => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 10));
+      active--;
+      return new Response('{}', { headers: { 'content-type': 'application/json' } });
+    }) as any;
+
+    const limiter = createRateLimiter(2);
+    const client = new Corriere({ rateLimiter: limiter });
+    await Promise.all(Array.from({ length: 6 }, (_, i) => client.get(`https://api.test.com/${i}`)));
+
+    expect(peak).toBe(2);
+    expect(limiter.active).toBe(0);
+    expect(limiter.pending).toBe(0);
   });
 });

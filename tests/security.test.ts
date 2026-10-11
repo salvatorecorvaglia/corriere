@@ -226,3 +226,178 @@ describe('autoPaginate cross-origin next links', () => {
     expect(seen[1].auth).toBeNull();
   });
 });
+
+/**
+ * An absolute `url` always overrode `baseURL`, so a client built for one API could be
+ * pointed at any host by whatever flowed into `url` — user input, a value from another
+ * service. `allowAbsoluteUrls: false` pins requests to `baseURL`.
+ */
+describe('allowAbsoluteUrls', () => {
+  let urls: string[];
+
+  function serve() {
+    urls = [];
+    global.fetch = vi.fn((url: any) => {
+      urls.push(String(url));
+      return Promise.resolve(jsonResponse({ items: [], next: null }));
+    }) as any;
+  }
+
+  it('rejects an absolute url that would escape baseURL when set to false', async () => {
+    serve();
+    const client = corriere.create({ baseURL: 'https://api.test.com', allowAbsoluteUrls: false });
+    await expect(client.get('https://evil.test.com/steal')).rejects.toMatchObject({
+      code: 'ERR_BAD_OPTION',
+    });
+    expect(urls).toEqual([]);
+  });
+
+  it('still resolves relative urls against baseURL when set to false', async () => {
+    serve();
+    const client = corriere.create({ baseURL: 'https://api.test.com', allowAbsoluteUrls: false });
+    await client.get('/users');
+    expect(urls).toEqual(['https://api.test.com/users']);
+  });
+
+  it('keeps a protocol-relative url under baseURL rather than treating it as a host', async () => {
+    serve();
+    const client = corriere.create({ baseURL: 'https://api.test.com', allowAbsoluteUrls: false });
+    await client.get('//evil.test.com/steal');
+    expect(urls).toEqual(['https://api.test.com/evil.test.com/steal']);
+  });
+
+  it('has nothing to enforce without a baseURL', async () => {
+    serve();
+    const client = corriere.create({ allowAbsoluteUrls: false });
+    await client.get('https://api.test.com/x');
+    expect(urls).toEqual(['https://api.test.com/x']);
+  });
+
+  it('rejects an absolute url outside baseURL by default', async () => {
+    serve();
+    const client = corriere.create({ baseURL: 'https://api.test.com' });
+    await expect(client.get('https://other.test.com/x')).rejects.toMatchObject({
+      code: 'ERR_BAD_OPTION',
+      message: expect.stringContaining('outside baseURL'),
+    });
+    expect(urls).toEqual([]);
+  });
+
+  it('lets an absolute url override baseURL when set to true', async () => {
+    serve();
+    const client = corriere.create({ baseURL: 'https://api.test.com', allowAbsoluteUrls: true });
+    await client.get('https://other.test.com/x');
+    expect(urls).toEqual(['https://other.test.com/x']);
+  });
+
+  it('sends an absolute url that is inside baseURL as is', async () => {
+    serve();
+    const client = corriere.create({ baseURL: 'https://api.test.com/v1' });
+    await client.get('https://api.test.com/v1/users');
+    await client.get('https://api.test.com/v1');
+    expect(urls).toEqual(['https://api.test.com/v1/users', 'https://api.test.com/v1']);
+  });
+
+  it('does not treat a sibling path or a .. traversal as inside baseURL', async () => {
+    serve();
+    const client = corriere.create({ baseURL: 'https://api.test.com/v1' });
+    await expect(client.get('https://api.test.com/v10/users')).rejects.toMatchObject({
+      code: 'ERR_BAD_OPTION',
+    });
+    await expect(client.get('https://api.test.com/v1/../admin')).rejects.toMatchObject({
+      code: 'ERR_BAD_OPTION',
+    });
+    await expect(client.get('http://api.test.com/v1/users')).rejects.toMatchObject({
+      code: 'ERR_BAD_OPTION',
+    });
+    expect(urls).toEqual([]);
+  });
+
+  it('is enforced by getUri too', () => {
+    const client = corriere.create({ baseURL: 'https://api.test.com', allowAbsoluteUrls: false });
+    expect(() => client.getUri({ url: 'https://evil.test.com/' })).toThrow(/allowAbsoluteUrls/);
+  });
+
+  it('lets autoPaginate follow an absolute next link, which allowedPaginateHosts governs', async () => {
+    urls = [];
+    global.fetch = vi.fn((url: any) => {
+      urls.push(String(url));
+      return Promise.resolve(
+        String(url).endsWith('/items')
+          ? jsonResponse({ items: [1], next: 'https://api.test.com/items?page=2' })
+          : jsonResponse({ items: [2], next: null }),
+      );
+    }) as any;
+    const client = corriere.create({ baseURL: 'https://api.test.com', allowAbsoluteUrls: false });
+    const items: unknown[] = [];
+    for await (const item of client.autoPaginate('/items')) items.push(item);
+    expect(items).toEqual([1, 2]);
+    expect(urls).toEqual(['https://api.test.com/items', 'https://api.test.com/items?page=2']);
+  });
+});
+
+/**
+ * The JSON parse error embedded up to 500 characters of the raw body in its message, and a
+ * message is never redacted — it goes straight into logs and crash reporters.
+ */
+describe('JSON parse failures', () => {
+  const body = '{"session":"tok_live_ABCDEF", oops';
+
+  function serve(status = 200) {
+    global.fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(body, { status, headers: { 'content-type': 'application/json' } }),
+      ),
+    ) as any;
+  }
+
+  it('does not put the response body in the error message', async () => {
+    serve();
+    const error: any = await dispatchRequest({
+      url: 'https://api.test.com/x',
+      method: 'get',
+    }).catch((e) => e);
+    expect(error.code).toBe('ERR_BAD_RESPONSE');
+    expect(error.message).toMatch(/^Failed to parse JSON response/);
+    expect(error.message).not.toContain('tok_live_ABCDEF');
+    expect(JSON.stringify(error.toJSON())).not.toContain('tok_live_ABCDEF');
+    expect(String(error.cause ?? '')).not.toContain('tok_live_ABCDEF');
+  });
+
+  it('exposes the raw body and status on error.response for callers that want them', async () => {
+    serve(502);
+    const error: any = await dispatchRequest({
+      url: 'https://api.test.com/x',
+      method: 'get',
+    }).catch((e) => e);
+    expect(error.response.status).toBe(502);
+    expect(error.response.data).toBe(body);
+    expect(error.response.headers['content-type']).toBe('application/json');
+  });
+});
+
+describe('header redaction covers common token headers', () => {
+  it('redacts x-auth-token, x-access-token, x-csrf-token and x-xsrf-token on error.config', async () => {
+    global.fetch = vi.fn(() => Promise.resolve(jsonResponse({}, 401))) as any;
+    const error: any = await dispatchRequest({
+      url: 'https://api.test.com/x',
+      method: 'get',
+      validateStatus: (s: number) => s < 400,
+      headers: {
+        'X-Auth-Token': 'a1',
+        'X-Access-Token': 'a2',
+        'X-CSRF-Token': 'a3',
+        'X-XSRF-TOKEN': 'a4',
+        'X-Request-Id': 'visible',
+      },
+    }).catch((e) => e);
+
+    expect(error.config.headers).toEqual({
+      'X-Auth-Token': '[REDACTED]',
+      'X-Access-Token': '[REDACTED]',
+      'X-CSRF-Token': '[REDACTED]',
+      'X-XSRF-TOKEN': '[REDACTED]',
+      'X-Request-Id': 'visible',
+    });
+  });
+});

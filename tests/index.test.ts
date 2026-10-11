@@ -62,14 +62,13 @@ describe('index.ts — default instance and exports', () => {
     });
 
     it('has defaults property', () => {
-      expect(corriere.defaults).toBeDefined();
       expect(corriere.defaults.method).toBe('get');
     });
 
     it('has interceptors', () => {
-      expect(corriere.interceptors).toBeDefined();
-      expect(corriere.interceptors.request).toBeDefined();
-      expect(corriere.interceptors.response).toBeDefined();
+      expect(corriere.interceptors.request).toBeInstanceOf(InterceptorManager);
+      expect(corriere.interceptors.response).toBeInstanceOf(InterceptorManager);
+      expect(corriere.interceptors.request).not.toBe(corriere.interceptors.response);
     });
 
     it('corriere(config) delegates to request()', async () => {
@@ -108,8 +107,9 @@ describe('index.ts — default instance and exports', () => {
 
     it('has independent interceptors', () => {
       const instance = corriere.create({});
-      expect(instance.interceptors).toBeDefined();
+      expect(instance.interceptors.request).toBeInstanceOf(InterceptorManager);
       expect(instance.interceptors.request).not.toBe(corriere.interceptors.request);
+      expect(instance.interceptors.response).not.toBe(corriere.interceptors.response);
     });
   });
 
@@ -202,13 +202,13 @@ describe('index.ts — default instance and exports', () => {
 
   describe('named exports', () => {
     it('exports Corriere class', () => {
-      expect(Corriere).toBeDefined();
       expect(typeof Corriere).toBe('function');
+      expect(new Corriere()).toBeInstanceOf(Corriere);
     });
 
     it('exports CorriereError class', () => {
-      expect(CorriereError).toBeDefined();
       expect(typeof CorriereError).toBe('function');
+      expect(new CorriereError('x', 'ERR_X', null, null, null)).toBeInstanceOf(Error);
     });
 
     it('exports mergeConfig function', () => {

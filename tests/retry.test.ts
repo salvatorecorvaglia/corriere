@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import CorriereError from '../src/core/corriereError';
-import retryRequest, { calculateDelay, defaultRetryCondition } from '../src/core/retry';
+import retryRequest, {
+  calculateDelay,
+  DEFAULT_RETRY_METHODS,
+  defaultRetryCondition,
+} from '../src/core/retry';
 import Corriere from '../src/corriere';
 
 describe('retry.ts', () => {
@@ -20,11 +24,6 @@ describe('retry.ts', () => {
     // Previously `{ timeout, retry }` together looked configured but never retried.
     it('retries on ETIMEDOUT', () => {
       const error = new CorriereError('timeout', CorriereError.ETIMEDOUT, null, null, null);
-      expect(defaultRetryCondition(error)).toBe(true);
-    });
-
-    it('retries on ECONNABORTED', () => {
-      const error = new CorriereError('aborted', CorriereError.ECONNABORTED, null, null, null);
       expect(defaultRetryCondition(error)).toBe(true);
     });
 
@@ -390,7 +389,9 @@ describe('retry.ts', () => {
       await expect(
         retryRequest(dispatch, {
           url: '/x',
-          method: 'POST',
+          // PUT: these tests are about whether the body can be replayed, so they use a
+          // method that is retried by default and carries a body.
+          method: 'PUT',
           data: stream,
           retry: 3,
           retryDelay: 1,
@@ -419,7 +420,7 @@ describe('retry.ts', () => {
 
       const result = await retryRequest(dispatch, {
         url: '/x',
-        method: 'POST',
+        method: 'PUT',
         data: { hello: 'world' },
         retry: 2,
         retryDelay: 1,
@@ -534,5 +535,131 @@ describe('onRetry is an observer, not a failure path', () => {
 
     expect(res).toEqual({ status: 200, data: 'ok' });
     expect(dispatch).toHaveBeenCalledTimes(3);
+  });
+});
+
+/**
+ * Every method was retried on network errors, timeouts and 5xx — including POST and PATCH,
+ * where a retry after an unknown outcome can apply the request twice. `retryMethods` limits
+ * those retries to the methods listed. The default stays "every method" in 1.x.
+ */
+describe('retryMethods', () => {
+  const networkError = () =>
+    new CorriereError('network', CorriereError.ERR_NETWORK, null, null, null);
+
+  it('does not retry a method that is not listed', async () => {
+    const dispatch = vi.fn(() => Promise.reject(networkError()));
+    await expect(
+      retryRequest(dispatch, {
+        method: 'post',
+        retry: 3,
+        retryDelay: 1,
+        retryMethods: ['get', 'put'],
+      }),
+    ).rejects.toMatchObject({ code: 'ERR_NETWORK' });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a listed method, whatever its case', async () => {
+    const dispatch = vi
+      .fn()
+      .mockRejectedValueOnce(networkError())
+      .mockResolvedValueOnce({ status: 200 });
+    const res = await retryRequest(dispatch, {
+      method: 'PUT',
+      retry: 3,
+      retryDelay: 1,
+      retryMethods: ['get', 'put'],
+    });
+    expect(res).toEqual({ status: 200 });
+    expect(dispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry POST or PATCH by default', async () => {
+    for (const method of ['post', 'patch']) {
+      const dispatch = vi.fn(() => Promise.reject(networkError()));
+      await expect(
+        retryRequest(dispatch, { method, retry: 2, retryDelay: 1 }),
+      ).rejects.toMatchObject({
+        code: 'ERR_NETWORK',
+      });
+      expect(dispatch).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('retries the idempotent methods by default', async () => {
+    for (const method of DEFAULT_RETRY_METHODS) {
+      const dispatch = vi
+        .fn()
+        .mockRejectedValueOnce(networkError())
+        .mockResolvedValueOnce({ status: 200 });
+      await retryRequest(dispatch, { method, retry: 1, retryDelay: 1 });
+      expect(dispatch).toHaveBeenCalledTimes(2);
+    }
+    expect([...DEFAULT_RETRY_METHODS]).toEqual(['get', 'head', 'options', 'put', 'delete']);
+  });
+
+  it('retries POST when the caller lists it', async () => {
+    const dispatch = vi
+      .fn()
+      .mockRejectedValueOnce(networkError())
+      .mockResolvedValueOnce({ status: 200 });
+    await retryRequest(dispatch, {
+      method: 'post',
+      retry: 1,
+      retryDelay: 1,
+      retryMethods: [...DEFAULT_RETRY_METHODS, 'post'],
+    });
+    expect(dispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('still retries a 429 for an unlisted method, since the server did not process it', async () => {
+    const err = new CorriereError(
+      'rate limited',
+      CorriereError.ERR_BAD_REQUEST,
+      { retryOn429: true } as any,
+      null,
+      null,
+    );
+    Object.defineProperty(err, 'response', {
+      value: {
+        status: 429,
+        headers: { 'retry-after': '0' },
+        data: null,
+        config: {},
+        request: {},
+        duration: 0,
+        statusText: '',
+      },
+    });
+    const dispatch = vi.fn().mockRejectedValueOnce(err).mockResolvedValueOnce({ status: 200 });
+    await retryRequest(dispatch, {
+      method: 'post',
+      retryOn429: true,
+      retryDelay: 1,
+      retryMethods: ['get'],
+    });
+    expect(dispatch).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('Retry-After on a 503', () => {
+  it('is honoured, not only on a 429', async () => {
+    const err = new CorriereError('unavailable', CorriereError.ERR_BAD_RESPONSE, null, null, null);
+    Object.defineProperty(err, 'response', {
+      value: {
+        status: 503,
+        headers: { 'retry-after': '0' },
+        data: null,
+        config: {},
+        request: {},
+        duration: 0,
+        statusText: '',
+      },
+    });
+    const dispatch = vi.fn().mockRejectedValueOnce(err).mockResolvedValueOnce({ status: 200 });
+    // Without Retry-After the backoff for a 10s base delay would far exceed the test timeout.
+    const res = await retryRequest(dispatch, { retry: 1, retryDelay: 10_000 });
+    expect(res).toEqual({ status: 200 });
   });
 });

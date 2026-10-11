@@ -95,7 +95,6 @@ describe('CorriereError', () => {
     it('has all expected error codes', () => {
       expect(CorriereError.ERR_BAD_OPTION_VALUE).toBe('ERR_BAD_OPTION_VALUE');
       expect(CorriereError.ERR_BAD_OPTION).toBe('ERR_BAD_OPTION');
-      expect(CorriereError.ECONNABORTED).toBe('ECONNABORTED');
       expect(CorriereError.ETIMEDOUT).toBe('ETIMEDOUT');
       expect(CorriereError.ERR_NETWORK).toBe('ERR_NETWORK');
       expect(CorriereError.ERR_BAD_RESPONSE).toBe('ERR_BAD_RESPONSE');
@@ -237,7 +236,6 @@ describe('Circular reference handling in config log/redact', () => {
     };
 
     const redacted = redactConfig(config);
-    expect(redacted).toBeDefined();
     expect(redacted?.headers?.['x-circular']).toEqual({ key: 'val', self: '[Circular]' });
     expect(redacted?.params?.circularParam).toEqual({ key: 'val', self: '[Circular]' });
   });

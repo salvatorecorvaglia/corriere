@@ -1,4 +1,16 @@
+import type buildURL from './core/buildURL';
+import type { CorriereError } from './core/corriereError';
+import type mergeConfig from './core/mergeConfig';
+import type Corriere from './corriere';
+import type { MemoryCache } from './helpers/memoryCache';
+import type { createRateLimiter } from './helpers/rateLimiter';
 import type InterceptorManager from './interceptors/interceptorManager';
+
+/**
+ * The error type is the `CorriereError` class itself. It used to be a separate, hand-kept
+ * interface here that could drift from the class it described.
+ */
+export type { CorriereError };
 
 export type Method = 'get' | 'delete' | 'head' | 'options' | 'post' | 'put' | 'patch';
 
@@ -32,16 +44,61 @@ export interface InterceptorOptions {
   runWhen?: RunWhenFunction;
 }
 
-export interface InterceptorHandler {
-  fulfilled: TransformFunction | null;
-  rejected: ((error: unknown) => unknown) | null;
+/**
+ * A registered interceptor. `V` is the value it receives; `R` is what it may hand on —
+ * the same type for request interceptors, anything for response interceptors.
+ */
+export interface InterceptorHandler<V = any, R = V> {
+  fulfilled: ((value: V) => R | Promise<R>) | null;
+  rejected: ((error: any) => unknown) | null;
   synchronous: boolean;
   runWhen: RunWhenFunction | null;
 }
 
+/**
+ * Request interceptors receive the config and must return one (or a promise of one).
+ * Response interceptors receive the response and may return anything: whatever they return
+ * is what the call resolves with, so one can unwrap `response.data`, for example.
+ */
 export interface Interceptors {
-  request: InterceptorManager;
-  response: InterceptorManager;
+  request: InterceptorManager<CorriereRequestConfig>;
+  response: InterceptorManager<CorriereResponse, unknown>;
+}
+
+/**
+ * One Server-Sent Event, as `stream()` yields it with `sseEvents: true`.
+ */
+export interface ServerSentEvent<T = unknown> {
+  /** The `event:` field, or `'message'` when the event had none. */
+  event: string;
+  /** The event's data, parsed as JSON when it parses, text otherwise. */
+  data: T;
+  /** The last event ID the stream set with `id:`, if any. It carries over between events. */
+  id?: string;
+  /** A `retry:` reconnection time in milliseconds, on the first event after it was sent. */
+  retry?: number;
+}
+
+export type HeaderValue = string | string[];
+
+/** A flat set of headers: name → value. */
+export type RawHeaders = Record<string, HeaderValue>;
+
+/**
+ * Request headers. Flat headers and per-method groups can be mixed in one object:
+ * `common` applies to every request, a method group (`get`, `post`, …) to that method, and
+ * any other key is a header sent on every request. A header set to `undefined` is omitted.
+ */
+export interface CorriereHeaders {
+  common?: RawHeaders;
+  get?: RawHeaders;
+  delete?: RawHeaders;
+  head?: RawHeaders;
+  options?: RawHeaders;
+  post?: RawHeaders;
+  put?: RawHeaders;
+  patch?: RawHeaders;
+  [header: string]: HeaderValue | RawHeaders | undefined;
 }
 
 /**
@@ -75,11 +132,19 @@ export interface SchemaValidator<T = any> {
 export interface CorriereRequestConfig {
   url?: string;
   baseURL?: string;
+  /**
+   * Whether an absolute `url` may point outside `baseURL` (default `false`). By default
+   * every request on a client with a `baseURL` stays under it: an absolute `url` on the
+   * same origin and under the base path is sent as is, and any other is rejected with
+   * `ERR_BAD_OPTION` instead of being sent to whatever host it names. Set `true` to let an
+   * absolute `url` override `baseURL`. Has no effect without a `baseURL`.
+   */
+  allowAbsoluteUrls?: boolean;
   method?: Method | string;
   params?: Record<string, unknown>;
   paramsSerializer?: ParamsSerializer;
   data?: unknown;
-  headers?: Record<string, string | string[]> | Record<string, Record<string, string | string[]>>;
+  headers?: CorriereHeaders;
   auth?: AuthConfig;
   timeout?: number;
   withCredentials?: boolean;
@@ -88,6 +153,14 @@ export interface CorriereRequestConfig {
   transformResponse?: TransformFunction | TransformFunction[];
   validateStatus?: ((status: number) => boolean) | null;
   retry?: number;
+  /**
+   * Methods that may be retried after a network error, timeout or 5xx — failures where the
+   * server may already have acted on the request. Case-insensitive. Defaults to the
+   * idempotent methods, `DEFAULT_RETRY_METHODS` (`get`, `head`, `options`, `put`,
+   * `delete`), so a `POST` or `PATCH` is never sent twice unless you list it. A `429` is
+   * retried for any method, since the server did not process the request.
+   */
+  retryMethods?: readonly string[];
   retryDelay?: number;
   retryCondition?: RetryConditionFunction;
   onRetry?: OnRetryFunction;
@@ -104,6 +177,12 @@ export interface CorriereRequestConfig {
    * Not supported in browsers, which return opaque redirect responses.
    */
   maxRedirects?: number;
+  /**
+   * For `stream()` on a `text/event-stream` response: yield each event as a
+   * `ServerSentEvent` — `{ event, data, id?, retry? }` — instead of just its data. Has no
+   * effect on any other content type.
+   */
+  sseEvents?: boolean;
   dispatcher?: unknown;
   agent?: unknown;
   dedupe?: boolean;
@@ -151,6 +230,13 @@ export interface CorriereRequestConfig {
  */
 export type InternalConfig = CorriereRequestConfig & {
   _builtUrl?: string;
+  /**
+   * Set by `autoPaginate` once pagination has followed a `next` link off the starting
+   * origin. Enforced where the final headers are built — after the instance defaults are
+   * merged in and after request interceptors have run — so no credential can be
+   * re-attached downstream of the point that decided to drop it.
+   */
+  _stripCredentials?: boolean;
 };
 
 export interface CorriereResponse<T = unknown> {
@@ -163,17 +249,6 @@ export interface CorriereResponse<T = unknown> {
   duration: number;
 }
 
-export interface CorriereError extends Error {
-  name: 'CorriereError';
-  code: string | null;
-  config: CorriereRequestConfig | null;
-  request: unknown;
-  response: CorriereResponse | null;
-  isCorriereError: true;
-  cause?: Error;
-  toJSON(): Record<string, unknown>;
-}
-
 export interface RateLimiter {
   acquire: (signal?: AbortSignal) => Promise<void>;
   release: () => void;
@@ -181,4 +256,39 @@ export interface RateLimiter {
   pending: number;
   active: number;
   destroyed: boolean;
+}
+
+/** The client methods an instance exposes, kept in step with `Corriere.publicMethods`. */
+export type CorriereMethods = Pick<Corriere, (typeof Corriere.publicMethods)[number]>;
+
+/**
+ * What `corriere.create()` returns: a callable client — `client(config)` or
+ * `client(url, config)` — carrying every client method plus the static helpers.
+ */
+export interface CorriereInstance extends CorriereMethods {
+  <T = any>(config: CorriereRequestConfig): Promise<CorriereResponse<T>>;
+  <T = any>(url: string, config?: CorriereRequestConfig): Promise<CorriereResponse<T>>;
+
+  defaults: CorriereRequestConfig;
+  interceptors: Interceptors;
+
+  all<T extends readonly unknown[] | []>(
+    values: T,
+  ): Promise<{ -readonly [P in keyof T]: Awaited<T[P]> }>;
+  spread<T, R>(callback: (...args: T[]) => R): (array: T[]) => R;
+  isCancel(value: unknown): value is CorriereError;
+  isCorriereError(value: unknown): value is CorriereError;
+
+  CorriereError: typeof CorriereError;
+  Corriere: typeof Corriere;
+  mergeConfig: typeof mergeConfig;
+  buildURL: typeof buildURL;
+  InterceptorManager: typeof InterceptorManager;
+  createRateLimiter: typeof createRateLimiter;
+  MemoryCache: typeof MemoryCache;
+}
+
+/** The default export: an instance that can also `create()` further instances. */
+export interface CorriereStatic extends CorriereInstance {
+  create(config?: CorriereRequestConfig): CorriereInstance;
 }

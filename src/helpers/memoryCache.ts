@@ -1,5 +1,10 @@
 import type { CacheProvider } from '../types';
 
+/**
+ * An in-memory `CacheProvider` holding at most `maxItems` entries. When full, the least
+ * recently used entry is evicted: the `Map` keeps entries in insertion order, and both
+ * `set` and a successful `get` move an entry to the end.
+ */
 class MemoryCache implements CacheProvider {
   private cache = new Map<string, { value: any; expiry: number | null }>();
   private maxItems: number;
@@ -15,6 +20,9 @@ class MemoryCache implements CacheProvider {
       this.cache.delete(key);
       return null;
     }
+    // Re-inserted so a read counts as use: eviction takes from the front of the Map.
+    this.cache.delete(key);
+    this.cache.set(key, item);
     return item.value;
   }
 
@@ -39,7 +47,7 @@ class MemoryCache implements CacheProvider {
       count++;
     }
 
-    // Evict the oldest item if we are still at limit
+    // Evict the least recently used item if we are still at the limit
     if (this.cache.size >= this.maxItems) {
       const oldest = this.cache.keys().next().value;
       if (oldest !== undefined) {
@@ -60,5 +68,4 @@ class MemoryCache implements CacheProvider {
   }
 }
 
-export const defaultMemoryCache = new MemoryCache();
 export { MemoryCache };
