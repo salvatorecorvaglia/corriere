@@ -588,7 +588,7 @@ describe('autoPaginate cross-origin credential stripping', () => {
         credentials: init.credentials,
       });
       return Promise.resolve(
-        String(url).startsWith('https://api.test.com')
+        new URL(String(url)).origin === 'https://api.test.com'
           ? jsonResponse({ items: [1], next: 'https://other.test.com/p2' })
           : jsonResponse({ items: [2], next: null }),
       );
@@ -739,7 +739,7 @@ describe('autoPaginate cross-origin stripping of grouped headers', () => {
     global.fetch = vi.fn((url: any, init: RequestInit) => {
       seen.push(new Headers(init.headers).get('authorization'));
       return Promise.resolve(
-        String(url).startsWith('https://api.test.com')
+        new URL(String(url)).origin === 'https://api.test.com'
           ? jsonResponse({ items: [1], next: 'https://other.test.com/p2' })
           : jsonResponse({ items: [2], next: null }),
       );
