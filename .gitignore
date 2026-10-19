@@ -15,7 +15,6 @@ build/
 coverage/
 .vitest/
 .biome_cache/
-.eslintcache
 .vite/
 
 # Logs
