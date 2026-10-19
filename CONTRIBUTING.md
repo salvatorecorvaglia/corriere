@@ -118,7 +118,6 @@ When submitting a Pull Request, please ensure:
 
 - The title follows the [Conventional Commits](https://www.conventionalcommits.org/) format (e.g. `feat: add retryDelay custom Jitter`, `fix: handle null headers in request`).
 - The description clearly details the motivation, changes made, and references any relevant issues.
-- All CI workflows (including linting, type-checking, Node tests, and browser tests) pass.
 - You have updated the contributors list in [CONTRIBUTORS.md](./CONTRIBUTORS.md) if you are a new contributor!
 
 ---
