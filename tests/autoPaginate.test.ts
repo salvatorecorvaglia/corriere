@@ -373,7 +373,7 @@ describe('autoPaginate parameter preservation', () => {
   });
 });
 
-describe('autoPaginate', () => {
+describe('autoPaginate frozen caller params', () => {
   it('does not mutate frozen caller params object', async () => {
     const client = new Corriere();
     const mockFetch = vi

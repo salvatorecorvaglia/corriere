@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -101,8 +101,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          registry-url: 'https://registry.npmjs.org'
-          cache: 'pnpm'
+          registry-url: "https://registry.npmjs.org"
+          cache: "pnpm"
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
       - run: pnpm publish --access public --provenance --no-git-checks

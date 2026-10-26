@@ -4,11 +4,11 @@ on:
   push:
     branches: [main]
     paths-ignore:
-      - '**.md'
+      - "**.md"
   pull_request:
     branches: [main]
     paths-ignore:
-      - '**.md'
+      - "**.md"
 
   workflow_call:
     inputs:
@@ -16,7 +16,7 @@ on:
         description: Git ref to check out
         required: false
         type: string
-        default: ''
+        default: ""
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -39,7 +39,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: 'pnpm'
+          cache: "pnpm"
       - run: pnpm install --frozen-lockfile
       - run: pnpm run lint
       - run: pnpm run typecheck
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
-          cache: 'pnpm'
+          cache: "pnpm"
       - run: pnpm install --frozen-lockfile
       - if: matrix.node-version != 22
         run: pnpm test
@@ -80,7 +80,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: 'pnpm'
+          cache: "pnpm"
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
       - run: pnpm pack --dry-run

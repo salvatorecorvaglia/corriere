@@ -118,7 +118,7 @@ describe('MemoryCache', () => {
   });
 });
 
-describe('MemoryCache', () => {
+describe('MemoryCache insertion order on update', () => {
   it('moves updated key to the end of insertion order', () => {
     const cache = new MemoryCache(3);
     cache.set('a', 1);

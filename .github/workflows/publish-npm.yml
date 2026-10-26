@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       publish_tag:
-        description: 'Which tag or branch to publish?'
+        description: "Which tag or branch to publish?"
         required: true
-        default: 'main'
+        default: "main"
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -33,8 +33,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          registry-url: 'https://registry.npmjs.org'
-          cache: 'pnpm'
+          registry-url: "https://registry.npmjs.org"
+          cache: "pnpm"
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
       - name: Verify built package loads

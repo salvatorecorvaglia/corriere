@@ -785,7 +785,7 @@ describe('fetchAdapter', () => {
   });
 });
 
-describe('fetchAdapter', () => {
+describe('fetchAdapter stream cancellation', () => {
   it('runs abort cleanup immediately when a stream is cancelled directly', async () => {
     const client = new Corriere();
     const ctrl = new AbortController();

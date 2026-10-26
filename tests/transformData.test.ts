@@ -133,7 +133,7 @@ describe('defaultTransformResponse', () => {
   });
 });
 
-describe('transformData', () => {
+describe('transformData single function', () => {
   it('supports a single function instead of an array', async () => {
     const fn = (data: any) => `${data}!`;
     const result = await transformData(fn, 'hello', {});

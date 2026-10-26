@@ -95,7 +95,7 @@ describe('flattenHeaders case-insensitive merging', () => {
   });
 });
 
-describe('flattenHeaders', () => {
+describe('flattenHeaders with primitive flat values', () => {
   it('handles primitive flat headers that collide with METHOD_KEYS or common', () => {
     const input = {
       common: 'flat-common-header',
