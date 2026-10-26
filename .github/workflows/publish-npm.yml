@@ -15,29 +15,16 @@ permissions:
   id-token: write
 
 jobs:
-  test:
-    name: Test before publish
-    runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        node-version: [22, 24]
-      fail-fast: true
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.inputs.publish_tag }}
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'pnpm'
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm test
+  quality:
+    name: Verify before publish
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ github.event.inputs.publish_tag }}
 
   publish-npm:
     name: Publish unscoped to npmjs
     runs-on: ubuntu-24.04
-    needs: test
+    needs: quality
     steps:
       - uses: actions/checkout@v6
         with:
