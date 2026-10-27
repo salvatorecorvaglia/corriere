@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="resources/corriere.svg" alt="Corriere logo" width="96" height="96">
+</p>
+
 # Corriere 🚚
 
 **Fast, flexible, zero-dependency modern HTTP client for JS/TS**
