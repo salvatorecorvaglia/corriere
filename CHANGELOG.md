@@ -9,11 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Updated development dependencies, including Biome 2.6.2, TypeScript 7, tsup 9, and Vitest 5.0.5.
+- Updated development dependencies, including Biome 2.6.3, TypeScript 6.0.3, tsup 9, and Vitest 5.0.5.
 - Made CI reusable and required its quality checks before creating GitHub releases.
 - Added npm package build, packing, entry-point verification, and metadata checks to CI.
 - Limited browser and coverage tests to Node.js 22 in CI, while retaining unit tests across the Node.js matrix.
 - Configured CI to cancel superseded runs on the same ref.
+- Run the full reusable CI workflow against the selected ref before manual npm publication.
+- Refresh the project logo and contributor, security and usage documentation.
 
 ## [1.1.0] - 2026-10-11
 
