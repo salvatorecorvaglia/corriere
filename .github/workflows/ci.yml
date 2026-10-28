@@ -83,8 +83,26 @@ jobs:
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
-      - run: pnpm pack --dry-run
+      - run: pnpm pack --pack-destination dist
       - name: Verify built package loads
         run: pnpm run verify:package
       - name: Lint package metadata
         run: npx --yes publint
+      - name: Verify installed tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          package=$(realpath dist/*.tgz)
+          smoke_dir=$(mktemp -d)
+          cd "$smoke_dir"
+          npm init -y
+          npm install --ignore-scripts "$package"
+          node --input-type=module -e "import('corriere')"
+          node -e "require('corriere')"
+      - run: (cd dist && sha256sum *.tgz > SHA256SUMS)
+      - uses: actions/upload-artifact@v6
+        with:
+          name: npm-package
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7

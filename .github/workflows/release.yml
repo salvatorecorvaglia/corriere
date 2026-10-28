@@ -103,6 +103,9 @@ jobs:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
           cache: "pnpm"
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run build
-      - run: pnpm publish --access public --provenance --no-git-checks
+      - uses: actions/download-artifact@v6
+        with:
+          name: npm-package
+          path: dist
+      - run: (cd dist && sha256sum --check SHA256SUMS)
+      - run: npm publish dist/*.tgz --access public --provenance
