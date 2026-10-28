@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-28
+
 ### Changed
 
 - Updated development dependencies, including Biome 2.6.3, TypeScript 6.0.3, tsup 9, and Vitest 5.0.5.
