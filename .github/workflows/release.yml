@@ -108,4 +108,4 @@ jobs:
           name: npm-package
           path: dist
       - run: (cd dist && sha256sum --check SHA256SUMS)
-      - run: npm publish dist/*.tgz --access public --provenance
+      - run: npm publish ./dist/*.tgz --access public --provenance
