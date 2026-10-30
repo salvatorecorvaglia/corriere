@@ -3,22 +3,22 @@ allowBuilds:
   esbuild: true
 
 minimumReleaseAgeExclude:
-  - '@biomejs/biome@2.5.7 || 2.5.13 || 2.6.4'
-  - '@biomejs/cli-darwin-arm64@2.5.7 || 2.5.13 || 2.6.4'
-  - '@biomejs/cli-darwin-x64@2.5.7 || 2.5.13 || 2.6.4'
-  - '@biomejs/cli-linux-arm64-musl@2.5.7 || 2.5.13 || 2.6.4'
-  - '@biomejs/cli-linux-arm64@2.5.7 || 2.5.13 || 2.6.4'
-  - '@biomejs/cli-linux-x64-musl@2.5.7 || 2.5.13 || 2.6.4'
-  - '@biomejs/cli-linux-x64@2.5.7 || 2.5.13 || 2.6.4'
-  - '@biomejs/cli-win32-arm64@2.5.7 || 2.5.13 || 2.6.4'
-  - '@biomejs/cli-win32-x64@2.5.7 || 2.5.13 || 2.6.4'
+  - "@biomejs/biome@2.5.7 || 2.5.13 || 2.6.4"
+  - "@biomejs/cli-darwin-arm64@2.5.7 || 2.5.13 || 2.6.4"
+  - "@biomejs/cli-darwin-x64@2.5.7 || 2.5.13 || 2.6.4"
+  - "@biomejs/cli-linux-arm64-musl@2.5.7 || 2.5.13 || 2.6.4"
+  - "@biomejs/cli-linux-arm64@2.5.7 || 2.5.13 || 2.6.4"
+  - "@biomejs/cli-linux-x64-musl@2.5.7 || 2.5.13 || 2.6.4"
+  - "@biomejs/cli-linux-x64@2.5.7 || 2.5.13 || 2.6.4"
+  - "@biomejs/cli-win32-arm64@2.5.7 || 2.5.13 || 2.6.4"
+  - "@biomejs/cli-win32-x64@2.5.7 || 2.5.13 || 2.6.4"
   - "@types/node@26.3.0 || 26.4.0"
   - "@vitest/coverage-v8@5.0.2"
   - "@vitest/mocker@5.0.2"
   - "@vitest/spy@5.0.2"
   - vitest@5.0.2
-  - '@biomejs/cli-android-arm64@2.6.4'
-  - '@biomejs/cli-android-x64@2.6.4'
+  - "@biomejs/cli-android-arm64@2.6.4"
+  - "@biomejs/cli-android-x64@2.6.4"
 
 overrides:
   esbuild: ^0.28.1
