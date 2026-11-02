@@ -528,35 +528,22 @@ try {
 
 ---
 
-## 🤝 Contributing
+## Contributing 🤝
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
-testing, and pull request guidelines. Development uses the pnpm version pinned in
-`package.json`.
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-```bash
-pnpm install --frozen-lockfile
-pnpm run lint
-pnpm run typecheck
-pnpm test
-pnpm run test:integration
-```
-
-The integration command builds the package and exercises native Fetch against a local
-HTTP server, including streamed uploads, cancellation, and reader cleanup.
-
-## 📜 Changelog
+## Changelog 📜
 
 Detailed release history and version changes can be found in [CHANGELOG.md](CHANGELOG.md).
 
-## 🔐 Security
+## Security 🔐
 
 If you discover a security vulnerability, please see our [Security Policy](SECURITY.md).
 
-## 📝 License
+## License 📝
 
 Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
 
----
+## Author ✍️
 
-**Author**: [Salvatore Corvaglia](https://github.com/salvatorecorvaglia)
+[Salvatore Corvaglia](https://github.com/salvatorecorvaglia)
