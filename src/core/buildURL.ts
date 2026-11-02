@@ -1,7 +1,7 @@
 import { ERR_BAD_OPTION } from '../constants/errorCodes';
 import { withCycleGuard } from '../helpers/cycleGuard';
-import type { CorriereRequestConfig, ParamsSerializer } from '../types';
-import CorriereError from './corriereError';
+import type { CorriereRequestConfig, InternalConfig, ParamsSerializer } from '../types';
+import CorriereError, { redactURL } from './corriereError';
 
 function serializeParams(
   params: Record<string, unknown>,
@@ -24,26 +24,27 @@ function serializeParams(
       return;
     }
 
-    if (Array.isArray(value)) {
-      value.forEach((item, index) => {
-        if (typeof item === 'object' && item !== null) {
-          encode(`${prefix}[${index}]`, item, seen);
-        } else {
-          encode(prefix, item, seen);
-        }
-      });
-    } else if (typeof value === 'object' && !(value instanceof Date)) {
+    if (typeof value === 'object' && !(value instanceof Date)) {
       const visited = seen ?? new WeakSet<object>();
-      // Tracks the current *path*, not everything ever seen: releasing the mark on the way
-      // out still breaks cycles, while letting the same object appear under two different
-      // keys (`{ a: shared, b: shared }`) serialize both times instead of dropping one.
+      // Guard arrays and objects on the current path, allowing shared references
+      // to be serialized again after the traversal leaves that path.
       withCycleGuard(
         value,
         visited,
         () => {
-          Object.keys(value as Record<string, unknown>).forEach((key) => {
-            encode(`${prefix}[${key}]`, (value as Record<string, unknown>)[key], visited);
-          });
+          if (Array.isArray(value)) {
+            value.forEach((item, index) => {
+              encode(
+                typeof item === 'object' && item !== null ? `${prefix}[${index}]` : prefix,
+                item,
+                visited,
+              );
+            });
+          } else {
+            Object.keys(value as Record<string, unknown>).forEach((key) => {
+              encode(`${prefix}[${key}]`, (value as Record<string, unknown>)[key], visited);
+            });
+          }
         },
         () => {},
       );
@@ -137,15 +138,19 @@ export default function buildURL(
  * `allowAbsoluteUrls` is enforced for requests, `getUri` and cache keys alike.
  */
 /**
- * Whether an absolute `url` stays inside `baseURL`: same origin, and a path at or below the
+ * Whether the final `url` stays inside `baseURL`: same origin, and a path at or below the
  * base path. Both are parsed first, so `..` segments are resolved before the comparison and
  * `/v10` does not count as being under `/v1`. A `baseURL` that cannot be parsed on its own
  * (a relative one, such as `/api`) contains nothing absolute.
  */
 function isWithinBaseURL(url: string, baseURL: string): boolean {
   try {
-    const target = new URL(url);
-    const base = new URL(baseURL);
+    // Relative browser bases need the same path check, without treating an
+    // absolute target as belonging to a relative base.
+    if (!isAbsoluteURL(baseURL) && isAbsoluteURL(url)) return false;
+    const reference = 'http://corriere.invalid';
+    const target = new URL(url, reference);
+    const base = new URL(baseURL, reference);
     if (target.origin !== base.origin) return false;
     const basePath = base.pathname.endsWith('/') ? base.pathname : `${base.pathname}/`;
     return target.pathname === base.pathname || target.pathname.startsWith(basePath);
@@ -156,25 +161,33 @@ function isWithinBaseURL(url: string, baseURL: string): boolean {
 
 export function resolveURL(config: CorriereRequestConfig): string {
   const url = config.url ?? '';
-  // With a `baseURL`, an absolute `url` must stay inside it unless explicitly allowed, so a
-  // client built for one API cannot be pointed elsewhere by input that reaches `url`.
+  let params = config.params;
+  const omittedKeys = (config as InternalConfig)._paginateQueryKeys;
+  if (params && omittedKeys?.length) {
+    params = { ...params };
+    for (const key of omittedKeys) delete params[key];
+  }
+  const fullURL = buildURL(url, config.baseURL, params, config.paramsSerializer);
+  // Apply the same path placeholders to the boundary, without serializing query
+  // parameters or invoking the caller's serializer a second time.
+  const baseURL = config.baseURL && buildURL(config.baseURL, undefined, params, () => '');
+  // Check after joining and substitution: relative paths and template values can
+  // contain dot segments that Fetch normalizes outside the configured base path.
   if (
     config.allowAbsoluteUrls !== true &&
     config.baseURL &&
-    isAbsoluteURL(url) &&
-    !isWithinBaseURL(url, config.baseURL)
+    !isWithinBaseURL(fullURL, baseURL || config.baseURL)
   ) {
     throw new CorriereError(
-      `Absolute URL "${url}" is outside baseURL "${config.baseURL}". Pass a path relative ` +
-        'to baseURL, or set allowAbsoluteUrls to true to let an absolute url override ' +
-        'baseURL.',
+      `Request URL "${redactURL(fullURL)}" is outside baseURL "${redactURL(config.baseURL)}". ` +
+        'Set allowAbsoluteUrls to true to permit requests outside baseURL.',
       ERR_BAD_OPTION,
       config,
       null,
       null,
     );
   }
-  return buildURL(url, config.baseURL, config.params, config.paramsSerializer);
+  return fullURL;
 }
 
 export { combineURLs, isAbsoluteURL, serializeParams };

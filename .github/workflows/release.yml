@@ -4,20 +4,18 @@ on:
   push:
     tags:
       - "v*"
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
   validate:
     name: Validate Tag Ref & Package Version
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Validate tag format and version match
         run: |
           if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
@@ -38,10 +36,13 @@ jobs:
 
   release:
     name: Create GitHub Release
+    permissions:
+      contents: write
     needs: [validate, quality]
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Extract Changelog Section
@@ -93,17 +94,20 @@ jobs:
 
   publish-npm:
     name: Publish unscoped to npmjs
+    permissions:
+      contents: read
+      id-token: write
     needs: [release]
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
-          cache: "pnpm"
-      - uses: actions/download-artifact@v7
+          package-manager-cache: false
+      - uses: actions/download-artifact@v8
         with:
           name: npm-package
           path: dist

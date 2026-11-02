@@ -7,12 +7,9 @@ on:
         description: "Which tag or branch to publish?"
         required: true
         default: "main"
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   quality:
@@ -24,19 +21,23 @@ jobs:
   publish-npm:
     name: Publish unscoped to npmjs
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     needs: quality
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.publish_tag }}
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
-          cache: "pnpm"
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run build
-      - name: Verify built package loads
-        run: pnpm run verify:package
-      - run: pnpm publish --access public --provenance --no-git-checks
+          package-manager-cache: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-package
+          path: dist
+      - run: (cd dist && sha256sum --check SHA256SUMS)
+      - run: npm publish ./dist/*.tgz --access public --provenance

@@ -2,6 +2,9 @@ import CorriereError from '../core/corriereError';
 import type { CorriereRequestConfig, CorriereResponse, RateLimiter } from '../types';
 
 interface QueueItem {
+  previous: QueueItem | null;
+  next: QueueItem | null;
+  queued: boolean;
   resolve: () => void;
   reject: (reason: Error) => void;
 }
@@ -33,7 +36,23 @@ export function createRateLimiter(
   }
   let active = 0;
   let destroyed = false;
-  const queue: QueueItem[] = [];
+  let head: QueueItem | null = null;
+  let tail: QueueItem | null = null;
+  let pending = 0;
+
+  // Each waiter owns its queue node, so cancellation can unlink it without a scan.
+  function remove(item: QueueItem): boolean {
+    if (!item.queued) return false;
+    if (item.previous) item.previous.next = item.next;
+    else head = item.next;
+    if (item.next) item.next.previous = item.previous;
+    else tail = item.previous;
+    item.previous = null;
+    item.next = null;
+    item.queued = false;
+    pending--;
+    return true;
+  }
 
   function acquire(signal?: AbortSignal): Promise<void> {
     if (destroyed) {
@@ -49,7 +68,7 @@ export function createRateLimiter(
       return Promise.resolve();
     }
 
-    if (queue.length >= maxQueueSize) {
+    if (pending >= maxQueueSize) {
       return Promise.reject(
         new CorriereError(
           `[Corriere] Rate limiter queue size exceeded maxQueueSize (${maxQueueSize})`,
@@ -64,7 +83,10 @@ export function createRateLimiter(
     return new Promise((resolve, reject) => {
       let onAbort: (() => void) | undefined;
 
-      const item = {
+      const item: QueueItem = {
+        previous: tail,
+        next: null,
+        queued: true,
         resolve: () => {
           if (signal && onAbort) {
             signal.removeEventListener('abort', onAbort);
@@ -79,15 +101,16 @@ export function createRateLimiter(
         },
       };
 
-      queue.push(item);
+      if (tail) tail.next = item;
+      else head = item;
+      tail = item;
+      pending++;
 
       if (signal) {
         onAbort = () => {
-          const index = queue.indexOf(item);
-          if (index !== -1) {
-            queue.splice(index, 1);
+          if (remove(item)) {
+            item.reject(cancelledError(signal.reason, 'Request aborted'));
           }
-          reject(cancelledError(signal.reason, 'Request aborted'));
         };
         signal.addEventListener('abort', onAbort, { once: true });
       }
@@ -98,8 +121,9 @@ export function createRateLimiter(
     if (destroyed) return;
     if (active <= 0) return;
 
-    const next = queue.shift();
+    const next = head;
     if (next) {
+      remove(next);
       next.resolve();
       return;
     }
@@ -112,8 +136,10 @@ export function createRateLimiter(
       null,
       '[Corriere] Rate limiter destroyed — pending request cancelled',
     );
-    while (queue.length > 0) {
-      queue.shift()!.reject(reason);
+    while (head) {
+      const item = head;
+      remove(item);
+      item.reject(reason);
     }
   }
 
@@ -122,7 +148,7 @@ export function createRateLimiter(
     release,
     destroy,
     get pending() {
-      return queue.length;
+      return pending;
     },
     get active() {
       return active;

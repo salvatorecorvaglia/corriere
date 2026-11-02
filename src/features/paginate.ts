@@ -177,17 +177,16 @@ export async function* paginate<T = any>(
 
     if (nextUrl) {
       let merged: InternalConfig = { ...currentConfig, url: nextUrl };
-      if (merged.params) {
-        merged.params = { ...merged.params };
-        try {
-          const dummyBase = 'http://dummy-base.com';
-          const parsedUrl = new URL(nextUrl, dummyBase);
-          for (const key of parsedUrl.searchParams.keys()) {
-            delete merged.params[key];
-          }
-        } catch {
-          merged.params = {};
-        }
+      try {
+        const parsedUrl = new URL(nextUrl, 'http://dummy-base.invalid');
+        merged._paginateQueryKeys = [
+          ...new Set([
+            ...(currentConfig._paginateQueryKeys ?? []),
+            ...parsedUrl.searchParams.keys(),
+          ]),
+        ];
+      } catch {
+        // URL validation in the request pipeline will report an invalid next link.
       }
 
       // The `next` link is server-controlled. Left unchecked it can walk the client — and

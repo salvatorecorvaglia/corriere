@@ -365,6 +365,6 @@ describe('cache and per-call transformResponse', () => {
     const cache = new MemoryCache();
     const setSpy = vi.spyOn(cache, 'set');
     await new Corriere().get('https://api.test.com/t', { cache });
-    expect(setSpy.mock.calls[0][0]).toMatch(/^v2:/);
+    expect(setSpy.mock.calls[0][0]).toMatch(/^v3:/);
   });
 });

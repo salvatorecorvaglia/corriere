@@ -1,4 +1,33 @@
-import type { CorriereResponse, ServerSentEvent } from '../types';
+import CorriereError from '../core/corriereError';
+import type { CorriereRequestConfig, CorriereResponse, ServerSentEvent } from '../types';
+
+export const DEFAULT_MAX_STREAM_LINE_BYTES = 1024 * 1024;
+export const DEFAULT_MAX_STREAM_EVENT_BYTES = 8 * 1024 * 1024;
+
+export function validateStreamLimits(config: CorriereRequestConfig): void {
+  for (const name of ['maxStreamLineBytes', 'maxStreamEventBytes'] as const) {
+    const value = config[name];
+    if (value !== undefined && value !== Infinity && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new CorriereError(
+        `${name} must be a non-negative safe integer or Infinity`,
+        CorriereError.ERR_BAD_OPTION_VALUE,
+        config,
+        null,
+        null,
+      );
+    }
+  }
+}
+
+function utf8Bytes(text: string): number {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.codePointAt(i)!;
+    bytes += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
+    if (code > 0xffff) i++;
+  }
+  return bytes;
+}
 
 /**
  * Turns the decoded lines of a streamed body into the values `stream()` yields. `line` is
@@ -55,7 +84,12 @@ function createTextLineParser(): LineParser {
  * event type resets after every dispatch while the last event ID carries over; a `retry`
  * is attached to the next event dispatched, so one sent on its own is not lost.
  */
-function createEventStreamParser(options: { events?: boolean } = {}): LineParser {
+function createEventStreamParser(options: {
+  events?: boolean;
+  maxBytes: number;
+  onLimit: () => never;
+}): LineParser {
+  let eventBytes = 0;
   let data: string[] = [];
   let eventType = '';
   let lastEventId = '';
@@ -86,9 +120,12 @@ function createEventStreamParser(options: { events?: boolean } = {}): LineParser
     *line(raw) {
       const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
       if (line === '') {
+        eventBytes = 0;
         yield* dispatch();
         return;
       }
+      eventBytes += utf8Bytes(line) + 1;
+      if (eventBytes > options.maxBytes) options.onLimit();
       if (line.startsWith(':')) return;
       const colon = line.indexOf(':');
       const field = colon === -1 ? line : line.slice(0, colon);
@@ -135,28 +172,76 @@ export async function* readStreamBody<T = any>(
 
   const stream = response.data;
   const decoder = new TextDecoder();
-  const parser = isEventStream(response.headers)
-    ? createEventStreamParser({ events: response.config?.sseEvents === true })
+  const lineLimit = response.config?.maxStreamLineBytes ?? DEFAULT_MAX_STREAM_LINE_BYTES;
+  const eventLimit = response.config?.maxStreamEventBytes ?? DEFAULT_MAX_STREAM_EVENT_BYTES;
+  const exceeded = (name: string, limit: number): never => {
+    throw new CorriereError(
+      `${name} size of ${limit} bytes exceeded`,
+      CorriereError.ERR_BAD_RESPONSE,
+      response.config,
+      response.request,
+      response,
+    );
+  };
+  const eventStream = isEventStream(response.headers);
+  const parser = eventStream
+    ? createEventStreamParser({
+        events: response.config?.sseEvents === true,
+        maxBytes: eventLimit,
+        onLimit: () => exceeded('maxStreamEventBytes', eventLimit),
+      })
     : createTextLineParser();
-  let buffer = '';
+  let fragments: string[] = [];
+  let skipLF = false;
+  let lineBytes = 0;
+  let previousHighSurrogate = false;
+
+  // Scan each decoded chunk once. Keep partial-line pieces without repeatedly
+  // concatenating and rescanning an ever-growing unfinished line.
+  const handleText = function* (text: string): Generator<unknown> {
+    let start = 0;
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      if (skipLF) {
+        skipLF = false;
+        if (char === '\n') {
+          start = i + 1;
+          continue;
+        }
+      }
+      if (char === '\n' || (eventStream && char === '\r')) {
+        fragments.push(text.slice(start, i));
+        const line = fragments.join('');
+        fragments = [];
+        start = i + 1;
+        skipLF = eventStream && char === '\r';
+        lineBytes = 0;
+        previousHighSurrogate = false;
+        yield* parser.line(line);
+      } else {
+        const code = text.charCodeAt(i);
+        const lowSurrogate = code >= 0xdc00 && code <= 0xdfff;
+        lineBytes +=
+          lowSurrogate && previousHighSurrogate ? 1 : code <= 0x7f ? 1 : code <= 0x7ff ? 2 : 3;
+        previousHighSurrogate = code >= 0xd800 && code <= 0xdbff;
+        if (lineBytes > lineLimit) exceeded('maxStreamLineBytes', lineLimit);
+      }
+    }
+    if (start < text.length) fragments.push(text.slice(start));
+  };
 
   const handleChunk = function* (chunk: any): Generator<any> {
-    const chunkStr =
+    const text =
       chunk instanceof Uint8Array || ArrayBuffer.isView(chunk) || chunk instanceof ArrayBuffer
         ? decoder.decode(chunk as any, { stream: true })
         : String(chunk);
-    buffer += chunkStr;
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-
-    for (const line of lines) {
-      yield* parser.line(line);
-    }
+    yield* handleText(text);
   };
 
   if (typeof stream.getReader === 'function') {
     const reader = stream.getReader();
     try {
+      validateStreamLimits(response.config ?? {});
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -172,6 +257,7 @@ export async function* readStreamBody<T = any>(
     }
   } else if (typeof stream[Symbol.asyncIterator] === 'function') {
     try {
+      validateStreamLimits(response.config ?? {});
       for await (const chunk of stream) {
         yield* handleChunk(chunk);
       }
@@ -188,9 +274,9 @@ export async function* readStreamBody<T = any>(
     throw new Error('[Corriere] The response data is not a readable stream or async iterable.');
   }
 
-  buffer += decoder.decode(new Uint8Array(), { stream: false });
-  if (buffer) {
-    yield* parser.line(buffer) as Generator<T>;
+  yield* handleText(decoder.decode()) as Generator<T>;
+  if (fragments.length) {
+    yield* parser.line(fragments.join('')) as Generator<T>;
   }
   yield* parser.end() as Generator<T>;
 }

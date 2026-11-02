@@ -1,23 +1,32 @@
-import { setBasicAuth } from '../helpers/auth';
-import { buildFetchHeaders, flattenHeaders, removeContentType } from '../helpers/flattenHeaders';
+import { buildFetchHeaders } from '../helpers/flattenHeaders';
 import { isBinaryData, isReadableStream } from '../helpers/isBinary';
 import { MemoryCache } from '../helpers/memoryCache';
 import settle from '../helpers/settle';
 import transformData from '../helpers/transformData';
-import type {
-  CacheProvider,
-  CorriereRequestConfig,
-  CorriereResponse,
-  InternalConfig,
-  TransformFunction,
-} from '../types';
+import type { CorriereRequestConfig, CorriereResponse, TransformFunction } from '../types';
 import { resolveURL } from './buildURL';
 import CorriereError, { FROM_CACHE } from './corriereError';
-import fetchAdapter, { CREDENTIAL_HEADERS } from './fetchAdapter';
-import { assertAllowedProtocol } from './protocol';
+import fetchAdapter from './fetchAdapter';
+import { DEFAULT_ALLOWED_PROTOCOLS } from './protocol';
+import {
+  finishHeaders,
+  type PreparedRequest,
+  prepareRequest,
+  requestHeaders,
+} from './requestPreparation';
 
-type HeadersConfig = Record<string, Record<string, string | string[]>>;
 type FlatHeaders = Record<string, string | string[]>;
+
+/** Cached payloads never own a caller's config; only finalized responses require it. */
+type CacheEntry = Omit<CorriereResponse<unknown>, 'config'>;
+type UnsettledResponse = CacheEntry & { config?: CorriereRequestConfig };
+
+interface ResponseCache {
+  get(key: string): CacheEntry | null | undefined | Promise<CacheEntry | null | undefined>;
+  set(key: string, entry: CacheEntry, ttl?: number): void | Promise<void>;
+  delete(key: string): void | Promise<void>;
+  clear(): void | Promise<void>;
+}
 
 /**
  * Non-cryptographic digest of the header segment of a cache key.
@@ -28,10 +37,9 @@ type FlatHeaders = Record<string, string | string[]>;
  * headers still have to *distinguish* entries, they just must not be readable, so this
  * hashes rather than drops them.
  *
- * A collision here mixes up two cache entries; it cannot bypass authentication, because
- * the key is never what grants access. That makes a fast 64-bit FNV-1a (two lanes, seeded
- * and rotated differently so they do not move in lockstep) the right trade rather than a
- * real digest, which would pull in a crypto dependency this library does not have.
+ * This digest is not a cryptographic security boundary. Canonical serialization below
+ * prevents structural collisions before hashing; the digest still has a finite collision
+ * probability and must not be used as proof of authorization.
  */
 function hashHeaders(serialized: string): string {
   let h1 = 0x811c9dc5;
@@ -43,6 +51,17 @@ function hashHeaders(serialized: string): string {
     h2 = (h2 << 5) | (h2 >>> 27);
   }
   return `${(h1 >>> 0).toString(16).padStart(8, '0')}${(h2 >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+/** Transport acceptance policies must not be borrowed from a different caller. */
+function sharingPolicy(config: CorriereRequestConfig): string {
+  return JSON.stringify([
+    config.maxContentLength ?? null,
+    config.maxRedirects ?? null,
+    config.allowedProtocols === null
+      ? null
+      : [...(config.allowedProtocols ?? DEFAULT_ALLOWED_PROTOCOLS)].sort(),
+  ]);
 }
 
 function buildCacheKey(
@@ -57,46 +76,40 @@ function buildCacheKey(
   const withCreds = config.withCredentials ? '1' : '0';
   const respType = config.responseType || 'json';
 
-  // Sort and serialize headers dynamically to prevent collisions,
-  // excluding environment-specific transient headers.
-  const serializedHeaders = Object.keys(flatHeaders)
-    .sort()
-    .filter(
-      (k) =>
-        !['user-agent', 'connection', 'host', 'content-length', 'accept-encoding'].includes(
-          k.toLowerCase(),
-        ),
-    )
-    .map((k) => {
-      const val = flatHeaders[k];
-      return `${k.toLowerCase()}=${Array.isArray(val) ? val.join(',') : val}`;
-    })
-    .join('&');
+  // Serialize normalized wire headers as tuples: delimiters in a value must never
+  // make a single header indistinguishable from multiple headers.
+  const serializedHeaders = JSON.stringify(
+    Array.from(buildFetchHeaders(flatHeaders).entries())
+      .filter(
+        ([name]) =>
+          !['user-agent', 'connection', 'host', 'content-length', 'accept-encoding'].includes(name),
+      )
+      .sort(([a], [b]) => a.localeCompare(b)),
+  );
 
-  return `v2:${method}:${fullURL}|h:${hashHeaders(serializedHeaders)}|c=${withCreds}|t=${respType}`;
+  return `v3:${method}:${fullURL}|h:${hashHeaders(serializedHeaders)}|c=${withCreds}|t=${respType}|p=${sharingPolicy(config)}`;
 }
 
 /**
- * The cache key for a config, computed exactly as `dispatchRequest` computes it.
- *
- * Exported so `Corriere.invalidate()` can drop an entry without callers ever having to
- * know the key format — and so the two can never disagree about it.
+ * The cache key for an already prepared URL/header configuration. Invalidation stays
+ * synchronous and does not run hooks, interceptors, or request transforms: callers must
+ * supply their final URL and header values if those stages change the request.
  */
 export function cacheKeyFor(config: CorriereRequestConfig): string {
-  const fullURL = (config as InternalConfig)._builtUrl || resolveURL(config);
-  const flatHeaders = flattenHeaders(config.headers as HeadersConfig | undefined, config.method);
-  setBasicAuth(config, flatHeaders);
+  const fullURL = resolveURL(config);
+  const flatHeaders = requestHeaders(config);
+  finishHeaders(flatHeaders, config.data, config);
   return buildCacheKey(config, fullURL, flatHeaders);
 }
 
 /**
  * Dedupe collapses two calls into one *in-flight request*, so it must additionally
  * separate configs that would behave differently on the wire even though they would cache
- * identically. `timeout` is the one such field not already covered: a cached body does not
- * depend on it, so it is deliberately not part of the cache key.
+ * identically. Timeout is not part of the cache key. Policies are repeated here so even
+ * a custom cache key cannot collapse inflight requests with different transport limits.
  */
 function buildDedupeKey(config: CorriereRequestConfig, cacheKey: string): string {
-  return `${cacheKey}|to=${config.timeout ?? 0}`;
+  return `${cacheKey}|to=${config.timeout ?? 0}|p=${sharingPolicy(config)}`;
 }
 
 /**
@@ -117,7 +130,9 @@ function buildTransformArray(
 function resolveCacheProvider(
   cache: CorriereRequestConfig['cache'],
   registry: RequestRegistry,
-): CacheProvider {
+): ResponseCache {
+  // Public providers remain permissively typed for compatibility. The request
+  // pipeline reads back the response-entry shape it writes through this boundary.
   return typeof cache === 'object' ? cache : registry.cache;
 }
 
@@ -126,12 +141,7 @@ function settleResponse(
   config: CorriereRequestConfig,
 ): Promise<CorriereResponse> {
   return new Promise<CorriereResponse>((resolve, reject) => {
-    settle(
-      resolve as (value: CorriereResponse) => void,
-      reject as (reason: CorriereError) => void,
-      response,
-      config,
-    );
+    settle(resolve, reject, response, config);
   });
 }
 
@@ -171,7 +181,7 @@ async function applySchema(
  * `config` is overwritten with the reader's own config on every cache hit, so storing it
  * only kept the caller's request body, signal and hook closures alive for the whole TTL.
  */
-function toCacheEntry(response: CorriereResponse): Omit<CorriereResponse, 'config'> {
+function toCacheEntry(response: UnsettledResponse): CacheEntry {
   const { config: _config, ...entry } = response;
   return entry;
 }
@@ -203,7 +213,7 @@ function toCacheEntry(response: CorriereResponse): Omit<CorriereResponse, 'confi
  * cache key, so N writes would be redundant.
  */
 async function finalizeAndSettle(
-  raw: CorriereResponse,
+  raw: UnsettledResponse,
   config: CorriereRequestConfig,
   options: {
     cacheable: boolean;
@@ -268,64 +278,36 @@ async function safeInvokeErrorHook(config: CorriereRequestConfig, error: unknown
   }
 }
 
-/** Deletes every credential header, whatever its casing, from a flattened header set. */
-function stripCredentialHeaders(flatHeaders: FlatHeaders): void {
-  for (const key of Object.keys(flatHeaders)) {
-    if (CREDENTIAL_HEADERS.includes(key.toLowerCase())) {
-      delete flatHeaders[key];
-    }
+function throwIfCanceled(config: CorriereRequestConfig): void {
+  if (config.signal?.aborted) {
+    throw CorriereError.canceled(config.signal.reason, config);
   }
 }
 
-async function executeFetchRequest(
-  config: CorriereRequestConfig,
-  fullURL: string,
-  flatHeaders: FlatHeaders,
+/** Release a body if response processing fails before ownership reaches the caller. */
+async function discardStream(body: unknown): Promise<void> {
+  try {
+    if (body && typeof body === 'object') {
+      if ('cancel' in body && typeof body.cancel === 'function') await body.cancel();
+      else if ('destroy' in body && typeof body.destroy === 'function') body.destroy();
+    }
+  } catch {
+    // Cleanup must not replace the processing failure.
+  }
+}
+
+function executePreparedRequest(
+  prepared: PreparedRequest,
+  config: CorriereRequestConfig = prepared.config,
 ): Promise<CorriereResponse> {
-  const requestTransforms = buildTransformArray(config.transformRequest);
-  const requestData = await transformData(requestTransforms, config.data, flatHeaders, config);
-
-  if (
-    requestData === null ||
-    requestData === undefined ||
-    (typeof FormData !== 'undefined' && requestData instanceof FormData)
-  ) {
-    removeContentType(flatHeaders);
-  }
-
-  const fetchOptions: RequestInit = {
-    method: (config.method || 'GET').toUpperCase(),
-    headers: buildFetchHeaders(flatHeaders),
-  };
-
-  const methodsWithBody = ['POST', 'PUT', 'PATCH', 'DELETE'];
-  if (
-    methodsWithBody.includes(fetchOptions.method!) &&
-    requestData !== undefined &&
-    requestData !== null
-  ) {
-    fetchOptions.body = requestData as BodyInit;
-  }
-
-  if (config.withCredentials && !(config as InternalConfig)._stripCredentials) {
-    fetchOptions.credentials = 'include';
-  }
-
-  if (config.dispatcher) {
-    (fetchOptions as any).dispatcher = config.dispatcher;
-  }
-  if (config.agent) {
-    (fetchOptions as any).agent = config.agent;
-  }
-
-  const requestStartTime = Date.now();
-  return await fetchAdapter(config, fullURL, fetchOptions, requestStartTime);
+  throwIfCanceled(config);
+  return fetchAdapter(config, prepared.url, { ...prepared.options }, Date.now());
 }
 
 interface Subscriber {
   config: CorriereRequestConfig;
   resolve: (res: CorriereResponse) => void;
-  reject: (err: any) => void;
+  reject: (err: unknown) => void;
   signal?: AbortSignal;
   onAbort?: () => void;
 }
@@ -364,17 +346,22 @@ function asSubscriberError(error: unknown, config: CorriereRequestConfig): unkno
  * Both used to be module globals, so every instance `create()` produced shared them. Two
  * clients configured with different transports (`config.fetch`, `dispatcher`, `agent`) but
  * the same URL collapsed into a single request and each could receive the other's
- * response — none of those fields are, or reasonably could be, part of a cache key. Owning
- * the registry is what makes the separation structural instead of a matter of hashing
- * enough fields. It also makes tests isolable, which the shared map actively prevented.
+ * response. Each registry captures its original transport: per-call overrides bypass
+ * sharing because runtime object identity cannot be persisted in a cache key. Owning the
+ * registry also isolates instances and makes tests independent.
  */
 export interface RequestRegistry {
   inflight: Map<string, InFlightRecord>;
-  cache: CacheProvider;
+  cache: ResponseCache;
+  transport: Pick<CorriereRequestConfig, 'fetch' | 'dispatcher' | 'agent'>;
 }
 
-export function createRegistry(): RequestRegistry {
-  return { inflight: new Map<string, InFlightRecord>(), cache: new MemoryCache() };
+export function createRegistry(config: CorriereRequestConfig = {}): RequestRegistry {
+  return {
+    inflight: new Map<string, InFlightRecord>(),
+    cache: new MemoryCache(),
+    transport: { fetch: config.fetch, dispatcher: config.dispatcher, agent: config.agent },
+  };
 }
 
 /**
@@ -407,32 +394,34 @@ export default async function dispatchRequest(
   config: CorriereRequestConfig,
   registry: RequestRegistry = defaultRegistry,
 ): Promise<CorriereResponse> {
-  const fullURL = (config as InternalConfig)._builtUrl || resolveURL(config);
-
-  assertAllowedProtocol(fullURL, config);
-
-  if (config.hooks?.onBeforeRequest) {
-    await config.hooks.onBeforeRequest(config);
+  throwIfCanceled(config);
+  let prepared: PreparedRequest;
+  try {
+    prepared = await prepareRequest(config);
+  } catch (error) {
+    await safeInvokeErrorHook(config, error);
+    throw error;
   }
-
-  const flatHeaders = flattenHeaders(config.headers as HeadersConfig | undefined, config.method);
-  if ((config as InternalConfig)._stripCredentials) {
-    stripCredentialHeaders(flatHeaders);
-  } else {
-    setBasicAuth(config, flatHeaders);
-  }
+  const { url: fullURL, headers: flatHeaders } = prepared;
 
   const isGet = (config.method || 'GET').toUpperCase() === 'GET';
   // A stream body can be read exactly once and cannot be cloned, so a stream response is
   // never cached (a replay would hand back an already-drained stream) and never deduped
   // (every caller would share one stream that only the first could read).
-  const cacheable = isGet && config.responseType !== 'stream';
+  // Runtime transport objects cannot be represented safely in persistent cache keys.
+  // Overrides use an independent request; create a client for a reusable transport.
+  const sameTransport =
+    config.fetch === registry.transport.fetch &&
+    config.dispatcher === registry.transport.dispatcher &&
+    config.agent === registry.transport.agent;
+  const cacheable = isGet && config.responseType !== 'stream' && sameTransport;
   const cacheKey =
     cacheable && (config.cache || config.dedupe) ? buildCacheKey(config, fullURL, flatHeaders) : '';
   const dedupeKey = cacheKey && buildDedupeKey(config, cacheKey);
 
   if (cacheable && config.cache) {
     const cached = await resolveCacheProvider(config.cache, registry).get(cacheKey);
+    throwIfCanceled(config);
     if (cached) {
       try {
         // A replay runs this caller's transforms, validateStatus and schema, exactly as a
@@ -452,7 +441,7 @@ export default async function dispatchRequest(
         // Tells `retryRequest` not to bother: the value came from the cache, so every
         // further attempt would read the same entry back and fail the same way.
         if (error instanceof CorriereError) {
-          (error as unknown as Record<symbol, boolean>)[FROM_CACHE] = true;
+          Object.assign(error, { [FROM_CACHE]: true });
         }
         await safeInvokeErrorHook(config, error);
         throw error;
@@ -460,22 +449,24 @@ export default async function dispatchRequest(
     }
   }
 
-  if (cacheable && config.dedupe) {
+  // Progress belongs to each download observer; sharing one adapter would notify
+  // only its first caller. Cache hits still have no download to report.
+  if (cacheable && config.dedupe && !config.onDownloadProgress) {
     let record = registry.inflight.get(dedupeKey);
-    const isNew = !record;
-    if (isNew) {
+    if (!record) {
       const recordAbortController = new AbortController();
       const fetchConfig = { ...config, signal: recordAbortController.signal };
 
-      const promise = executeFetchRequest(fetchConfig, fullURL, flatHeaders);
+      const promise = executePreparedRequest(prepared, fetchConfig);
 
-      record = {
+      const createdRecord: InFlightRecord = {
         promise,
         abortController: recordAbortController,
         subscribers: new Set<Subscriber>(),
       };
 
-      trackActiveRequest(registry, dedupeKey, record);
+      record = createdRecord;
+      trackActiveRequest(registry, dedupeKey, createdRecord);
 
       // Both branches deliver with `Promise.allSettled` over a snapshot of the subscriber
       // set. Snapshot because an aborting subscriber removes itself mid-iteration;
@@ -484,10 +475,10 @@ export default async function dispatchRequest(
       // nothing here is allowed to reject the outer promise, which has no handler.
       promise.then(
         async (shared) => {
-          if (registry.inflight.get(dedupeKey) === record) {
+          if (registry.inflight.get(dedupeKey) === createdRecord) {
             registry.inflight.delete(dedupeKey);
           }
-          const subs = [...record!.subscribers];
+          const subs = [...createdRecord.subscribers];
           await Promise.allSettled(
             subs.map(async (sub, index) => {
               detachSubscriber(sub);
@@ -516,11 +507,11 @@ export default async function dispatchRequest(
             }),
           );
         },
-        async (error) => {
-          if (registry.inflight.get(dedupeKey) === record) {
+        async (error: unknown) => {
+          if (registry.inflight.get(dedupeKey) === createdRecord) {
             registry.inflight.delete(dedupeKey);
           }
-          const subs = [...record!.subscribers];
+          const subs = [...createdRecord.subscribers];
           await Promise.allSettled(
             subs.map(async (sub) => {
               detachSubscriber(sub);
@@ -533,6 +524,7 @@ export default async function dispatchRequest(
       );
     }
 
+    const subscribedRecord = record;
     return new Promise<CorriereResponse>((resolve, reject) => {
       const subscriber: Subscriber = {
         config,
@@ -541,36 +533,45 @@ export default async function dispatchRequest(
         signal: config.signal,
       };
 
-      if (config.signal) {
-        if (config.signal.aborted) {
-          reject(CorriereError.canceled(config.signal?.reason, config));
+      const signal = config.signal;
+      if (signal) {
+        if (signal.aborted) {
+          reject(CorriereError.canceled(signal.reason, config));
+          if (subscribedRecord.subscribers.size === 0) {
+            if (registry.inflight.get(dedupeKey) === subscribedRecord) {
+              registry.inflight.delete(dedupeKey);
+            }
+            subscribedRecord.abortController.abort(signal.reason);
+          }
           return;
         }
         const onAbort = () => {
-          record!.subscribers.delete(subscriber);
-          reject(CorriereError.canceled(config.signal?.reason, config));
-          if (record!.subscribers.size === 0) {
+          subscribedRecord.subscribers.delete(subscriber);
+          reject(CorriereError.canceled(signal.reason, config));
+          if (subscribedRecord.subscribers.size === 0) {
             // Unregistered *before* aborting. The aborted fetch only rejects a tick or more
             // later, and until then a new caller for the same key would join this doomed
             // record and receive a cancellation it never asked for.
-            if (registry.inflight.get(dedupeKey) === record) {
+            if (registry.inflight.get(dedupeKey) === subscribedRecord) {
               registry.inflight.delete(dedupeKey);
             }
-            record!.abortController.abort(config.signal!.reason);
+            subscribedRecord.abortController.abort(signal.reason);
           }
         };
         subscriber.onAbort = onAbort;
-        config.signal.addEventListener('abort', onAbort, { once: true });
+        signal.addEventListener('abort', onAbort, { once: true });
       }
 
-      record!.subscribers.add(subscriber);
+      subscribedRecord.subscribers.add(subscriber);
     });
   }
 
-  const promise = executeFetchRequest(config, fullURL, flatHeaders);
+  const promise = executePreparedRequest(prepared);
+  let streamBody: unknown;
 
   try {
     const shared = await promise;
+    if (config.responseType === 'stream') streamBody = shared.data;
     const settled = await finalizeAndSettle(shared, config, {
       cacheable,
       cacheKey,
@@ -585,15 +586,28 @@ export default async function dispatchRequest(
 
     return settled;
   } catch (error) {
+    await discardStream(streamBody);
     await safeInvokeErrorHook(config, error);
     throw error;
   }
 }
 
-function cloneResponse(response: CorriereResponse): CorriereResponse {
+function cloneResponse(response: UnsettledResponse): UnsettledResponse {
   let clonedData = response.data;
   if (response.data && typeof response.data === 'object') {
-    if (!isBinaryData(response.data) && !isReadableStream(response.data)) {
+    if (response.data instanceof ArrayBuffer) {
+      clonedData = response.data.slice(0);
+    } else if (typeof Buffer !== 'undefined' && Buffer.isBuffer(response.data)) {
+      clonedData = Buffer.from(response.data);
+    } else if (ArrayBuffer.isView(response.data)) {
+      const view = response.data;
+      const buffer = new ArrayBuffer(view.byteLength);
+      new Uint8Array(buffer).set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+      clonedData =
+        view instanceof DataView
+          ? new DataView(buffer)
+          : new (view.constructor as new (buffer: ArrayBuffer) => ArrayBufferView)(buffer);
+    } else if (!isBinaryData(response.data) && !isReadableStream(response.data)) {
       try {
         if (typeof structuredClone === 'function') {
           clonedData = structuredClone(response.data);
@@ -621,7 +635,7 @@ function cloneResponse(response: CorriereResponse): CorriereResponse {
  * are the values that leak into logs and crash reporters.
  */
 function finalizeResponse(
-  shared: CorriereResponse,
+  shared: UnsettledResponse,
   config: CorriereRequestConfig,
 ): CorriereResponse {
   return {

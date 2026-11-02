@@ -133,11 +133,10 @@ export interface CorriereRequestConfig {
   url?: string;
   baseURL?: string;
   /**
-   * Whether an absolute `url` may point outside `baseURL` (default `false`). By default
-   * every request on a client with a `baseURL` stays under it: an absolute `url` on the
-   * same origin and under the base path is sent as is, and any other is rejected with
-   * `ERR_BAD_OPTION` instead of being sent to whatever host it names. Set `true` to let an
-   * absolute `url` override `baseURL`. Has no effect without a `baseURL`.
+   * Whether requests may resolve outside `baseURL` (default `false`). The final URL,
+   * after joining and path-parameter substitution, must have the same origin and stay
+   * under the base path. Relative dot-segment escapes are rejected with `ERR_BAD_OPTION`
+   * too. Set `true` to permit URLs outside that boundary. Has no effect without `baseURL`.
    */
   allowAbsoluteUrls?: boolean;
   method?: Method | string;
@@ -183,6 +182,10 @@ export interface CorriereRequestConfig {
    * effect on any other content type.
    */
   sseEvents?: boolean;
+  /** Maximum UTF-8 bytes per decoded stream line (default 1 MiB); Infinity disables it. */
+  maxStreamLineBytes?: number;
+  /** Maximum UTF-8 bytes of SSE nonblank lines plus one newline each per event (default 8 MiB); Infinity disables it. */
+  maxStreamEventBytes?: number;
   dispatcher?: unknown;
   agent?: unknown;
   dedupe?: boolean;
@@ -224,12 +227,14 @@ export interface CorriereRequestConfig {
  * Fields Corriere attaches to a config as it moves through the pipeline.
  *
  * Kept off `CorriereRequestConfig` so they do not appear in consumers' autocomplete or
- * read as things a caller is expected to set — `_builtUrl` in particular is just the
- * memoised result of `buildURL`, and a caller supplying their own would silently override
- * `url`, `baseURL` and `params` all at once.
+ * read as things a caller is expected to set. URLs are resolved after request preparation;
+ * the legacy `_builtUrl` field no longer overrides URL, baseURL, or params.
  */
 export type InternalConfig = CorriereRequestConfig & {
+  /** @deprecated Ignored by the request pipeline. */
   _builtUrl?: string;
+  /** Query keys supplied by pagination links; omit defaults before serialization. */
+  _paginateQueryKeys?: string[];
   /**
    * Set by `autoPaginate` once pagination has followed a `next` link off the starting
    * origin. Enforced where the final headers are built — after the instance defaults are

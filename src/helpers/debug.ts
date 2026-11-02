@@ -1,61 +1,35 @@
 import type CorriereError from '../core/corriereError';
-import { redactBody, redactParams, redactURL } from '../core/corriereError';
+import { redactURL } from '../core/corriereError';
 import type { CorriereRequestConfig, CorriereResponse } from '../types';
+import { debugPreview } from './debugPreview';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
   const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  const i = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
   return `${(bytes / 1024 ** i).toFixed(1)} ${sizes[i]}`;
-}
-
-function sanitizeConfigForLog(config: CorriereRequestConfig): {
-  params: Record<string, unknown> | undefined;
-  timeout: number | undefined;
-  retry: number | undefined;
-} {
-  return {
-    params: config.params && (redactParams(config.params) as Record<string, unknown>),
-    timeout: config.timeout,
-    retry: config.retry,
-  };
 }
 
 export function logRequest(config: CorriereRequestConfig, fullUrl: string): void {
   if (!config.debug) return;
 
-  const safe = sanitizeConfigForLog(config);
-
-  const method = (config.method || 'GET').toUpperCase();
-  const url = redactURL(fullUrl || config.url || '') || '';
+  const method = (config.method || 'GET').slice(0, 32).toUpperCase();
+  const url = (redactURL(fullUrl || config.url || '') || '').slice(0, 2048);
 
   const parts: string[] = [`🔔 [Corriere] → ${method} ${url}`];
 
-  if (safe.params && Object.keys(safe.params).length > 0) {
-    try {
-      parts.push(`   Params: ${JSON.stringify(safe.params)}`);
-    } catch {
-      parts.push('   Params: [unserializable params]');
-    }
-  }
+  if (config.params) parts.push(`   Params: ${debugPreview(config.params)}`);
 
   if (config.data && typeof config.data === 'object') {
-    let preview: string;
-    try {
-      preview = JSON.stringify(redactBody(config.data));
-    } catch {
-      preview = '[unserializable body]';
-    }
-    const truncated = preview.length > 200 ? `${preview.substring(0, 200)}...` : preview;
-    parts.push(`   Body: ${truncated}`);
+    parts.push(`   Body: ${debugPreview(config.data)}`);
   }
 
-  if (safe.timeout) {
-    parts.push(`   Timeout: ${safe.timeout}ms`);
+  if (config.timeout) {
+    parts.push(`   Timeout: ${config.timeout}ms`);
   }
 
-  if (safe.retry) {
-    parts.push(`   Retry: ${safe.retry}x`);
+  if (config.retry) {
+    parts.push(`   Retry: ${config.retry}x`);
   }
 
   console.log(parts.join('\n'));
@@ -64,29 +38,22 @@ export function logRequest(config: CorriereRequestConfig, fullUrl: string): void
 export function logResponse(response: CorriereResponse): void {
   if (!response.config?.debug) return;
   const status = response.status;
-  const statusText = response.statusText || '';
+  const statusText = (response.statusText || '').slice(0, 256);
   const duration = response.duration != null ? `${response.duration}ms` : '??';
 
   const statusIcon = status >= 200 && status < 300 ? '✅' : status >= 400 ? '❌' : '⚠️';
 
   const parts: string[] = [`🔔 [Corriere] ← ${statusIcon} ${status} ${statusText} (${duration})`];
 
-  // The server's `content-length` is exact and free; estimating from the data means
-  // serializing the whole body, so it is only the fallback.
+  // Do not serialize arbitrary payloads merely to estimate their size.
   const lengthHeader = response.headers?.['content-length'];
   const declared = Number(Array.isArray(lengthHeader) ? lengthHeader[0] : lengthHeader);
   if (lengthHeader !== undefined && Number.isFinite(declared) && declared >= 0) {
     parts.push(`   Size: ~${formatBytes(declared)}`);
+  } else if (typeof response.data === 'string') {
+    parts.push(`   Size: ~${formatBytes(response.data.length)}`);
   } else if (response.data) {
-    try {
-      const size =
-        typeof response.data === 'string'
-          ? response.data.length
-          : JSON.stringify(response.data).length;
-      parts.push(`   Size: ~${formatBytes(size)}`);
-    } catch {
-      // ignore
-    }
+    parts.push('   Size: [not measured]');
   }
 
   console.log(parts.join('\n'));
@@ -95,10 +62,10 @@ export function logResponse(response: CorriereResponse): void {
 export function logError(error: CorriereError, config?: CorriereRequestConfig): void {
   if (!config?.debug) return;
 
-  const parts: string[] = [`🔔 [Corriere] ← ❌ ERROR: ${error.message}`];
+  const parts: string[] = [`🔔 [Corriere] ← ❌ ERROR: ${error.message.slice(0, 2048)}`];
 
   if (error.code) {
-    parts.push(`   Code: ${error.code}`);
+    parts.push(`   Code: ${error.code.slice(0, 128)}`);
   }
 
   if (error.response) {

@@ -21,8 +21,6 @@ on:
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
   contents: read
@@ -31,12 +29,13 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref || github.sha }}
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: "pnpm"
@@ -48,16 +47,17 @@ jobs:
   test:
     name: Test (Node ${{ matrix.node-version }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     strategy:
       matrix:
-        node-version: [22, 24]
+        node-version: [22, 24, 26]
       fail-fast: false
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref || github.sha }}
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
           cache: "pnpm"
@@ -68,16 +68,18 @@ jobs:
         run: pnpm run test:browser
       - if: matrix.node-version == 22
         run: pnpm run test:coverage
+      - run: pnpm run test:integration
 
   package:
     name: Validate npm package
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref || github.sha }}
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: "pnpm"
@@ -100,9 +102,11 @@ jobs:
           node --input-type=module -e "import('corriere')"
           node -e "require('corriere')"
       - run: (cd dist && sha256sum *.tgz > SHA256SUMS)
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: npm-package
-          path: dist/
+          path: |
+            dist/*.tgz
+            dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 7

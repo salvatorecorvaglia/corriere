@@ -11,7 +11,7 @@ import retryRequest from './core/retry';
 import defaultsConfig from './defaults/index';
 import { paginate } from './features/paginate';
 import { readStreamBody } from './features/stream';
-import { logError, logRequest, logResponse } from './helpers/debug';
+import { logError, logResponse } from './helpers/debug';
 import { rateLimitedRequest } from './helpers/rateLimiter';
 import { toFormData } from './helpers/toFormData';
 import InterceptorManager from './interceptors/interceptorManager';
@@ -20,7 +20,6 @@ import type {
   CorriereResponse,
   InterceptorHandler,
   Interceptors,
-  InternalConfig,
   Method,
 } from './types';
 
@@ -50,11 +49,6 @@ function dispatchAndRetry(
   cfg: CorriereRequestConfig,
   registry: RequestRegistry,
 ): Promise<CorriereResponse> {
-  const fullUrl = resolveURL(cfg);
-  logRequest(cfg, fullUrl);
-
-  const enrichedCfg: InternalConfig = { ...cfg, _builtUrl: fullUrl };
-
   // Bound to this client's registry, so dedupe and caching never reach across instances.
   const dispatch = (config: CorriereRequestConfig) => dispatchRequest(config, registry);
 
@@ -62,7 +56,7 @@ function dispatchAndRetry(
     ? (config: CorriereRequestConfig) => rateLimitedRequest(dispatch, config.rateLimiter!, config)
     : dispatch;
 
-  return retryRequest(dispatchFn, enrichedCfg);
+  return retryRequest(dispatchFn, cfg);
 }
 
 export class Corriere {
@@ -97,7 +91,7 @@ export class Corriere {
       request: new InterceptorManager(),
       response: new InterceptorManager(),
     };
-    this.registry = createRegistry();
+    this.registry = createRegistry(this.defaults);
   }
 
   /**
@@ -115,9 +109,9 @@ export class Corriere {
    * Takes the same arguments a `get()` would, so callers never have to reconstruct a cache
    * key — `cacheKeyFor` derives it exactly as the request pipeline does.
    *
-   * The key is derived from the instance defaults plus `config`; request interceptors do not
-   * run here. If an interceptor adds a header to the cached request (an auth token, say),
-   * pass that header in `config` too, or the key will not match and nothing is dropped.
+   * Invalidation is synchronous: interceptors, hooks, and request transforms do not run.
+   * Pass the final URL, params, and headers if those stages change the request. For
+   * example, supply the transformed auth header too, or the key will not match.
    */
   invalidate(url: string, config?: CorriereRequestConfig): void {
     const merged = mergeConfig(this.defaults, withRequestFields(config, { method: 'get', url }));
@@ -152,22 +146,26 @@ export class Corriere {
       );
     }
 
-    const { requestInterceptors, responseInterceptors, synchronous } =
-      this.collectInterceptors(mergedConfig);
+    const responseInterceptors: InterceptorHandler[] = [];
+    this.interceptors.response.forEach((interceptor: InterceptorHandler) => {
+      responseInterceptors.push(interceptor);
+    });
 
     let promise: Promise<any>;
-
-    if (synchronous) {
-      try {
+    try {
+      const { requestInterceptors, synchronous } = this.collectInterceptors(mergedConfig);
+      if (synchronous) {
         const finalCfg = runRequestInterceptorsSync(mergedConfig, requestInterceptors);
         promise = dispatchAndRetry(finalCfg, this.registry);
-      } catch (err) {
-        promise = Promise.reject(err);
+      } else {
+        promise = runRequestInterceptorsAsync(mergedConfig, requestInterceptors).then(
+          (cfg: CorriereRequestConfig) => dispatchAndRetry(cfg, this.registry),
+        );
       }
-    } else {
-      promise = runRequestInterceptorsAsync(mergedConfig, requestInterceptors).then(
-        (cfg: CorriereRequestConfig) => dispatchAndRetry(cfg, this.registry),
-      );
+    } catch (err) {
+      // Predicate failures follow the same logging and response-interceptor path
+      // as failures from request handlers and dispatch.
+      promise = Promise.reject(err);
     }
 
     promise = promise.then(
@@ -195,11 +193,9 @@ export class Corriere {
 
   private collectInterceptors(mergedConfig: CorriereRequestConfig): {
     requestInterceptors: InterceptorHandler[];
-    responseInterceptors: InterceptorHandler[];
     synchronous: boolean;
   } {
     const requestInterceptors: InterceptorHandler[] = [];
-    const responseInterceptors: InterceptorHandler[] = [];
     let synchronous = true;
 
     this.interceptors.request.forEach((interceptor: InterceptorHandler) => {
@@ -208,11 +204,7 @@ export class Corriere {
       requestInterceptors.unshift(interceptor);
     });
 
-    this.interceptors.response.forEach((interceptor: InterceptorHandler) => {
-      responseInterceptors.push(interceptor);
-    });
-
-    return { requestInterceptors, responseInterceptors, synchronous };
+    return { requestInterceptors, synchronous };
   }
 
   getUri(config?: CorriereRequestConfig): string {

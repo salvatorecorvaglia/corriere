@@ -68,78 +68,92 @@ async function fetchFollowingRedirects(
       redirect: 'manual',
     });
 
-    // Browsers return an opaque stub for `redirect: 'manual'`: status 0, no Location,
-    // unreadable body. Manual following is impossible there, so say so plainly rather
-    // than silently returning an unusable response.
-    if (response.type === 'opaqueredirect' || (response.status === 0 && !response.ok)) {
-      throw new CorriereError(
-        'config.maxRedirects is not supported in this environment: the fetch implementation ' +
-          'returns opaque redirect responses. Omit maxRedirects to let fetch follow redirects.',
-        CorriereError.ERR_NOT_SUPPORT,
-        config,
-        response,
-        null,
-      );
-    }
-
-    if (!REDIRECT_STATUSES.has(response.status)) return response;
-
-    const location = response.headers.get('location');
-    // A 3xx with no Location is not actionable — hand it back and let validateStatus rule.
-    if (!location) return response;
-
-    // maxRedirects: 0 means "do not follow"; the 3xx itself is the result.
-    if (max === 0) return response;
-
-    if (hop >= max) {
-      throw new CorriereError(
-        `Maximum number of redirects exceeded (${max})`,
-        CorriereError.ERR_FR_TOO_MANY_REDIRECTS,
-        config,
-        response,
-        null,
-      );
-    }
-
-    let nextURL: string;
+    let returned = false;
     try {
-      nextURL = new URL(location, currentURL).toString();
-    } catch {
-      throw new CorriereError(
-        `Invalid redirect location: ${location}`,
-        CorriereError.ERR_INVALID_URL,
-        config,
-        response,
-        null,
-      );
+      // Browsers return an opaque stub for `redirect: 'manual'`: status 0, no Location,
+      // unreadable body. Manual following is impossible there, so say so plainly rather
+      // than silently returning an unusable response.
+      if (response.type === 'opaqueredirect' || (response.status === 0 && !response.ok)) {
+        throw new CorriereError(
+          'config.maxRedirects is not supported in this environment: the fetch implementation ' +
+            'returns opaque redirect responses. Omit maxRedirects to let fetch follow redirects.',
+          CorriereError.ERR_NOT_SUPPORT,
+          config,
+          response,
+          null,
+        );
+      }
+
+      if (!REDIRECT_STATUSES.has(response.status)) {
+        returned = true;
+        return response;
+      }
+
+      const location = response.headers.get('location');
+      // A 3xx with no Location is not actionable — hand it back and let validateStatus rule.
+      if (!location) {
+        returned = true;
+        return response;
+      }
+
+      // maxRedirects: 0 means "do not follow"; the 3xx itself is the result.
+      if (max === 0) {
+        returned = true;
+        return response;
+      }
+
+      if (hop >= max) {
+        throw new CorriereError(
+          `Maximum number of redirects exceeded (${max})`,
+          CorriereError.ERR_FR_TOO_MANY_REDIRECTS,
+          config,
+          response,
+          null,
+        );
+      }
+
+      let nextURL: string;
+      try {
+        nextURL = new URL(location, currentURL).toString();
+      } catch {
+        throw new CorriereError(
+          `Invalid redirect location: ${location}`,
+          CorriereError.ERR_INVALID_URL,
+          config,
+          response,
+          null,
+        );
+      }
+
+      assertAllowedProtocol(nextURL, config);
+
+      if (!sameOrigin(nextURL, currentURL)) {
+        for (const name of CREDENTIAL_HEADERS) headers.delete(name);
+      }
+
+      // 303 downgrades to GET (except HEAD, which stays HEAD); 301/302 do so for POST —
+      // the Fetch spec's rules, matching browsers. 307/308 preserve method and body.
+      if (
+        (response.status === 303 && method !== 'HEAD') ||
+        ((response.status === 301 || response.status === 302) && method === 'POST')
+      ) {
+        method = 'GET';
+        body = undefined;
+        headers.delete('content-type');
+        headers.delete('content-length');
+      }
+
+      currentURL = nextURL;
+    } finally {
+      if (!returned) {
+        // Discarded responses include rejected hops as well as followed redirects.
+        try {
+          await response.body?.cancel();
+        } catch {
+          // Cleanup cannot replace a redirect error or stop a valid redirect chain.
+        }
+      }
     }
-
-    assertAllowedProtocol(nextURL, config);
-
-    if (!sameOrigin(nextURL, currentURL)) {
-      for (const name of CREDENTIAL_HEADERS) headers.delete(name);
-    }
-
-    // 303 downgrades to GET (except HEAD, which stays HEAD); 301/302 do so for POST —
-    // the Fetch spec's rules, matching browsers. 307/308 preserve method and body.
-    if (
-      (response.status === 303 && method !== 'HEAD') ||
-      ((response.status === 301 || response.status === 302) && method === 'POST')
-    ) {
-      method = 'GET';
-      body = undefined;
-      headers.delete('content-type');
-      headers.delete('content-length');
-    }
-
-    // Cancel the discarded 3xx body so the connection is released.
-    try {
-      await response.body?.cancel();
-    } catch {
-      // ignore
-    }
-
-    currentURL = nextURL;
   }
 }
 
@@ -417,18 +431,25 @@ const streamCleanupRegistry =
       })
     : null;
 
-function wrapStreamWithCleanup(stream: any, cleanup: () => void): any {
-  if (!stream) return stream;
-
+// Keep this closure outside the wrapper's scope: held finalizer values must not
+// retain the target stream through the scope used by the patched stream methods.
+function createStreamCleanup(cleanup: () => void): () => void {
   let cleaned = false;
   const onceCleanup = () => {
     if (!cleaned) {
       cleaned = true;
+      streamCleanupRegistry?.unregister(onceCleanup);
       cleanup();
     }
   };
+  return onceCleanup;
+}
 
-  streamCleanupRegistry?.register(stream, onceCleanup);
+function wrapStreamWithCleanup(stream: any, cleanup: () => void): any {
+  if (!stream) return stream;
+
+  const onceCleanup = createStreamCleanup(cleanup);
+  streamCleanupRegistry?.register(stream, onceCleanup, onceCleanup);
 
   if (typeof stream.cancel === 'function') {
     const originalCancel = stream.cancel;
@@ -569,12 +590,21 @@ export default async function fetchAdapter(
     try {
       responseData = await readResponseData(fetchResponse, config, rawResponse, requestStartTime);
       if (config.responseType === 'stream') {
-        isStream = true;
+        isStream = responseData != null;
         responseData = wrapStreamWithCleanup(responseData, abort.cleanup);
       }
       // `config.schema` is applied later, in the request pipeline, so it validates the data
       // the caller actually receives — after `transformResponse` and after the status check.
     } catch (readError) {
+      // Preserve cancellation/timeout identity before a generic read-error wrapper
+      // would make classifyFetchError treat it as an existing CorriereError.
+      if (
+        abort.isTimedOut() ||
+        config.signal?.aborted ||
+        (readError instanceof Error && readError.name === 'AbortError')
+      ) {
+        throw classifyFetchError(readError, config, abort.isTimedOut());
+      }
       if (readError instanceof CorriereError) throw readError;
       throw CorriereError.from(
         readError as Error,

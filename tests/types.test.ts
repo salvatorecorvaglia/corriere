@@ -1,5 +1,7 @@
 import { describe, expectTypeOf, it } from 'vitest';
+import type { RequestRegistry } from '../src/core/request';
 import corriere, {
+  type CacheProvider,
   type CorriereError,
   type CorriereHeaders,
   type CorriereInstance,
@@ -15,6 +17,25 @@ import corriere, {
  * keep rejecting. They sit in functions that are never called, so nothing runs.
  */
 describe('public types', () => {
+  it('types configurable memory protections without removing existing constructors', () => {
+    const cache = new corriere.MemoryCache(1000, 64 * 1024 * 1024);
+    expectTypeOf(cache.estimatedBytes).toEqualTypeOf<number>();
+    expectTypeOf({
+      maxStreamLineBytes: Infinity,
+      maxStreamEventBytes: 1024,
+    }).toMatchTypeOf<CorriereRequestConfig>();
+    new corriere.MemoryCache();
+    new corriere.MemoryCache(1000);
+    const neverRun = () => {
+      // @ts-expect-error — cache byte budgets are numeric
+      new corriere.MemoryCache(1000, '64 MiB');
+      // @ts-expect-error — accounting is read-only
+      cache.estimatedBytes = 0;
+      // @ts-expect-error — parser limits are numeric
+      corriere.create({ maxStreamLineBytes: 'unlimited' });
+    };
+    void neverRun;
+  });
   it('types the default export and its methods', () => {
     expectTypeOf(corriere.get<{ id: number }>).returns.toEqualTypeOf<
       Promise<CorriereResponse<{ id: number }>>
@@ -117,5 +138,54 @@ describe('public types', () => {
     expectTypeOf<ServerSentEvent['event']>().toEqualTypeOf<string>();
     expectTypeOf<ServerSentEvent['id']>().toEqualTypeOf<string | undefined>();
     expectTypeOf<CorriereRequestConfig['sseEvents']>().toEqualTypeOf<boolean | undefined>();
+  });
+
+  it('keeps stored cache entries distinct from finalized responses', () => {
+    type Entry = NonNullable<Awaited<ReturnType<RequestRegistry['cache']['get']>>>;
+    expectTypeOf<Entry>().toEqualTypeOf<Omit<CorriereResponse<unknown>, 'config'>>();
+    expectTypeOf<Entry['data']>().toBeUnknown();
+    expectTypeOf<RequestRegistry['cache']['set']>().parameter(1).toEqualTypeOf<Entry>();
+
+    const neverRun = (entry: Entry, registry: RequestRegistry) => {
+      // @ts-expect-error — cached responses have no caller configuration
+      entry.config;
+      // @ts-expect-error — cached data requires narrowing before property access
+      entry.data.id;
+      // @ts-expect-error — replay must attach a config before producing a full response
+      const response: CorriereResponse = entry;
+      // @ts-expect-error — the internal response cache cannot accept arbitrary values
+      registry.cache.set('key', 42);
+      void response;
+    };
+    void neverRun;
+  });
+
+  it('requires subscriber errors to be narrowed and subscribers to receive full responses', () => {
+    type Record = RequestRegistry['inflight'] extends Map<string, infer R> ? R : never;
+    type Subscriber = Record['subscribers'] extends Set<infer S> ? S : never;
+    expectTypeOf<Subscriber['reject']>().parameter(0).toBeUnknown();
+    expectTypeOf<Subscriber['resolve']>().parameter(0).toEqualTypeOf<CorriereResponse<unknown>>();
+    expectTypeOf<Awaited<Record['promise']>>().toEqualTypeOf<CorriereResponse<unknown>>();
+
+    const neverRun = (subscriber: Subscriber, value: Parameters<Subscriber['reject']>[0]) => {
+      // @ts-expect-error — arbitrary thrown values do not necessarily have a message
+      value.message;
+      subscriber.reject('a non-Error rejection is still supported');
+      // @ts-expect-error — subscribers cannot resolve with response data alone
+      subscriber.resolve({ data: 42 });
+    };
+    void neverRun;
+  });
+
+  it('preserves permissive public custom cache providers and synchronous invalidation', () => {
+    const provider: CacheProvider = {
+      get: async () => ({ value: 'provider-specific storage' }),
+      set: (_key, _value: unknown) => {},
+      delete: async () => {},
+      clear: () => {},
+    };
+    expectTypeOf({ cache: provider }).toMatchTypeOf<CorriereRequestConfig>();
+    expectTypeOf(corriere.invalidate).returns.toBeVoid();
+    expectTypeOf(corriere.MemoryCache).instance.toMatchTypeOf<CacheProvider>();
   });
 });

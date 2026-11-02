@@ -32,6 +32,10 @@
 
 ## Installation 📦
 
+Corriere requires Node.js **22.13.0 or newer**. It uses native `fetch` and Web APIs;
+browser applications need an environment that provides those APIs. The package ships
+ESM, CommonJS, and TypeScript declarations.
+
 Install Corriere using your preferred package manager:
 
 ```bash
@@ -94,7 +98,7 @@ const response = await client.get('/projects');
 ### 1. Server-Sent Events & Streaming 🌊
 
 Read streams using `async generators`. Each value is returned as parsed JSON when it parses and as a string otherwise.
-- When the response is `text/event-stream`, the body is parsed as Server-Sent Events: each event yields its `data` (multi-line `data:` fields are joined with `\n`), `event:`/`id:`/`retry:`/comment lines are skipped, and a `[DONE]` event is dropped.
+- When the response is `text/event-stream`, the body is parsed as Server-Sent Events with CR, LF, or CRLF line endings: each event yields its `data` (multi-line `data:` fields are joined with `\n`), `event:`/`id:`/`retry:`/comment lines are skipped, and a `[DONE]` event is dropped.
 - Any other body is read line by line (split on `\n`), with a leading `data: ` unwrapped — this covers newline-delimited JSON.
 
 ```typescript
@@ -116,6 +120,14 @@ for await (const e of corriere.stream<ServerSentEvent>(url, { sseEvents: true })
 }
 ```
 
+Stream parsers cap each decoded line at 1 MiB and each SSE event at 8 MiB by default.
+Set `maxStreamLineBytes` and `maxStreamEventBytes` on a client or call to change them;
+`Infinity` disables the respective limit. Limits count UTF-8 bytes; an SSE event counts
+its nonblank lines plus one newline per line, including metadata and comments. Exceeding
+a limit throws `ERR_BAD_RESPONSE` and releases the reader. Both options accept
+non-negative safe integers or `Infinity`. `maxContentLength` separately limits the whole
+response body.
+
 ### 2. Auto-Pagination 📃
 
 Iterate through paginated APIs seamlessly. It automatically tracks `next` links or page tokens:
@@ -131,6 +143,10 @@ for await (const item of pageGenerator) {
   console.log('Paginated item:', item);
 }
 ```
+
+When a pagination `next` link includes a query key, it replaces the matching initial or
+instance-default parameter for the remaining chain. Other parameters, such as filters,
+are preserved. Custom parameter serializers receive only the remaining parameters.
 
 ### 3. GraphQL 🕸️
 
@@ -176,9 +192,26 @@ client.invalidate('/config', { cache: true }); // drop one entry
 client.clearCache(); // drop everything
 ```
 
-`invalidate()` computes the key from the instance defaults and the config you pass —
-request interceptors do not run. If an interceptor adds a header to cached requests (an auth
-token, say), pass the same header to `invalidate()`.
+`invalidate()` computes the key synchronously from the instance defaults and the config
+you pass. Interceptors, hooks, and request transforms do not run. Supply the final URL,
+params, and headers if those stages change them (for example, a transformed auth header).
+
+The built-in `MemoryCache` defaults to 1,000 entries and a 64 MiB estimated payload budget.
+To choose another budget, pass a cache instance:
+
+```typescript
+const client = corriere.create({ cache: new corriere.MemoryCache(1000, 16 * 1024 * 1024) });
+```
+
+The second constructor argument is the byte budget: `0` disables storage and `Infinity`
+disables byte accounting. `estimatedBytes` reports the current accounting total (zero
+when accounting is disabled). Oversized or unmeasurable entries are skipped without
+failing the request. Estimates include keys, strings, object fields, binary backing
+buffers, and collection entries; they exclude opaque transport handles and are not a
+measurement of engine heap usage. Accounting is taken at insertion, so externally
+mutating stored values does not recalculate it. Traversal is bounded to 10,000 nodes and
+64 levels, with getters and custom serialization methods left unevaluated. An update
+that no longer fits removes the older cached value.
 
 You can also pass a custom `CacheProvider` implementation matching the `CacheProvider` interface:
 ```typescript
@@ -218,6 +251,10 @@ const client = corriere.create({
 });
 ```
 
+Queued calls are admitted in FIFO order. Aborting a queued call immediately frees its
+queue capacity. Queue insertion, admission, and cancellation removal take constant time;
+`destroy()` rejects all pending calls in one pass.
+
 The limiter counts calls, not network requests. Identical calls collapsed by `dedupe` share
 one request but each still holds a slot while it waits, so a burst of duplicates can fill the
 limiter with a single request in flight.
@@ -252,6 +289,10 @@ client.interceptors.response.use(
   },
 );
 ```
+
+If a request interceptor's `runWhen` predicate throws, the request rejects through its
+promise. Response error interceptors can observe or recover from that failure, and the
+transport is not called.
 
 `use()` takes an optional third argument. `runWhen: (config) => boolean` skips a request
 interceptor for configs it returns `false` for. `synchronous: true` marks a request
@@ -310,21 +351,21 @@ replaced.
 
 ### Request
 
-| Option              | Type                        | Default         | Description                                                                                                                                                                                             |
-| ------------------- | --------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `url`               | `string`                    | —               | Request URL, resolved against `baseURL` when relative.                                                                                                                                                  |
-| `method`            | `string`                    | `'get'`         | HTTP method (case-insensitive).                                                                                                                                                                         |
-| `baseURL`           | `string`                    | `undefined`     | Prefix for relative URLs.                                                                                                                                                                               |
-| `allowAbsoluteUrls` | `boolean`                   | `false`         | Whether an absolute `url` may point outside `baseURL`. By default an absolute `url` must be on the same origin and under the base path; any other is rejected. Set `true` to let it override `baseURL`. |
-| `params`            | `object \| URLSearchParams` | `undefined`     | Query parameters. Values also fill `:name` or `{name}` placeholders in the path (URL-encoded); the rest go in the query string.                                                                         |
-| `paramsSerializer`  | `(params) => string`        | built in        | Custom query-string serializer. The built-in one writes nested objects as `a[b]=1`, arrays as repeated keys (`a=1&a=2`) and dates as ISO strings.                                                       |
-| `data`              | `unknown`                   | `undefined`     | Request body. Plain objects are sent as JSON; `FormData`, `URLSearchParams`, `Blob`, `ArrayBuffer`, streams and strings are sent as they are. Ignored for `GET`, `HEAD` and `OPTIONS`.                  |
-| `headers`           | `CorriereHeaders`           | see below       | Request headers. Flat headers and per-method groups (`common`, `get`, `post`, …) can be mixed; `undefined` values are omitted. `post`/`put`/`patch` default to `Content-Type: application/json`.        |
-| `auth`              | `{ username, password }`    | `undefined`     | Sends an HTTP Basic `Authorization` header.                                                                                                                                                             |
-| `withCredentials`   | `boolean`                   | `false`         | Sends cookies cross-origin (`credentials: 'include'`).                                                                                                                                                  |
-| `signal`            | `AbortSignal`               | `undefined`     | Cancels the request; the error has code `ERR_CANCELED`.                                                                                                                                                 |
-| `timeout`           | `number`                    | `0`             | Milliseconds before the request fails with `ETIMEDOUT`.`0` or `Infinity` disables it.                                                                                                                   |
-| `transformRequest`  | `fn \| fn[]`                | JSON serializer | Functions `(data, headers, config)` applied to the body before sending.                                                                                                                                 |
+| Option              | Type                        | Default         | Description                                                                                                                                                                                      |
+| ------------------- | --------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `url`               | `string`                    | —               | Request URL, resolved against `baseURL` when relative.                                                                                                                                           |
+| `method`            | `string`                    | `'get'`         | HTTP method (case-insensitive).                                                                                                                                                                  |
+| `baseURL`           | `string`                    | `undefined`     | Prefix for relative URLs.                                                                                                                                                                        |
+| `allowAbsoluteUrls` | `boolean`                   | `false`         | Permits URLs outside `baseURL`. By default the final URL must stay on the same origin and under the base path, including after joining and parameter substitution.                               |
+| `params`            | `object \| URLSearchParams` | `undefined`     | Query parameters. Values also fill `:name` or `{name}` placeholders in the path (URL-encoded); the rest go in the query string.                                                                  |
+| `paramsSerializer`  | `(params) => string`        | built in        | Custom query-string serializer. The built-in one writes nested objects as `a[b]=1`, arrays as repeated keys (`a=1&a=2`) and dates as ISO strings.                                                |
+| `data`              | `unknown`                   | `undefined`     | Request body. Plain objects are sent as JSON; `FormData`, `URLSearchParams`, `Blob`, `ArrayBuffer`, streams and strings are sent as they are. Ignored for `GET`, `HEAD` and `OPTIONS`.           |
+| `headers`           | `CorriereHeaders`           | see below       | Request headers. Flat headers and per-method groups (`common`, `get`, `post`, …) can be mixed; `undefined` values are omitted. `post`/`put`/`patch` default to `Content-Type: application/json`. |
+| `auth`              | `{ username, password }`    | `undefined`     | Sends an HTTP Basic `Authorization` header.                                                                                                                                                      |
+| `withCredentials`   | `boolean`                   | `false`         | Sends cookies cross-origin (`credentials: 'include'`).                                                                                                                                           |
+| `signal`            | `AbortSignal`               | `undefined`     | Cancels the request; the error has code `ERR_CANCELED`.                                                                                                                                          |
+| `timeout`           | `number`                    | `0`             | Milliseconds before the request fails with `ETIMEDOUT`.`0` or `Infinity` disables it.                                                                                                            |
+| `transformRequest`  | `fn \| fn[]`                | JSON serializer | Functions `(data, headers, config)` applied to the body before sending.                                                                                                                          |
 
 ### Response
 
@@ -360,6 +401,19 @@ replaced.
 | `cacheKeySerializer` | `(config, url, headers) => string` | built in | Custom cache key. The built-in key hashes the headers; a custom one must keep secrets out of the key itself.                                             |
 | `dedupe`             | `boolean`                          | `false`  | Collapses identical concurrent `GET` requests into one network call.                                                                                     |
 
+Built-in sharing keys separate response-size limits, redirect limits, and protocol
+allowlists. Requests with download-progress callbacks bypass inflight deduplication so
+each caller receives its own download events. If you supply a custom cache key, include
+any transport policies that should keep cached responses separate.
+
+Mutable binary responses (`ArrayBuffer`, typed arrays, `DataView`, and Node `Buffer`) are
+copied when `cacheClone` is enabled. Immutable `Blob` values may be shared.
+
+Caching and deduplication use the transport configured when the client is created.
+A request that supplies a different `fetch`, `dispatcher`, or `agent` bypasses both,
+including custom cache providers. Create a separate client to reuse that transport with
+caching or deduplication.
+
 ### Security and limits
 
 | Option             | Type               | Default               | Description                                                                                                                                                                                                                                                     |
@@ -376,6 +430,18 @@ replaced.
 | `maxPages`             | `number`                    | `1000`                | Most pages `autoPaginate` will fetch before failing.                                                                                                                                 |
 | `allowedPaginateHosts` | `string[] \| null`          | `undefined`           | Extra hosts an `autoPaginate` `next` link may point to. Cross-origin links are refused by default; `null` disables the check. Credentials are dropped on any cross-origin hop.       |
 | `formSerializer`       | `{ brackets?: boolean }`    | `{ brackets: false }` | How `postForm`/`putForm`/`patchForm` name nested fields: `a.b` by default, `a[b]` with `brackets: true`.                                                                             |
+
+Debug payload previews are limited to 200 characters, five levels, and 100 visited values;
+they redact sensitive fields without invoking getters or `toJSON`. Response logging uses
+`content-length` or string length when available and skips whole-object size estimation.
+
+Request preparation runs once per caller on each attempt, before cache lookup or
+inflight deduplication: `onBeforeRequest` runs first, then request transforms, then final
+URL validation and header normalization. Hook and transform URL/parameter changes reach
+the transport. Built-in cache/deduplication keys use the final URL and outgoing headers;
+custom `cacheKeySerializer` callbacks receive the transformed headers too. Hooks and
+request transforms therefore run even for cache hits and deduplicated subscribers.
+Cross-origin pagination credential stripping is enforced after request transforms.
 
 ### Transport, hooks and debugging
 
@@ -421,11 +487,12 @@ Corriere is written in TypeScript and ships its types.
 - **Errors are safe to log.** Both `error.config` and `error.response.config` are redacted.
   A _successful_ `response.config` is not — callers legitimately read back what they sent —
   so avoid logging whole successful responses if they carry credentials.
-- **Requests stay under `baseURL`.** On a client with a `baseURL`, an absolute `url` is sent
-  only if it is on the same origin and under the base path; `client.get('https://elsewhere.example')`
+- **Requests stay under `baseURL`.** On a client with a `baseURL`, the final request URL is sent
+  only if it is on the same origin and under the base path, after joining and substitution; `client.get('https://elsewhere.example')`
   is rejected with `ERR_BAD_OPTION`, and `//host` is treated as a path under `baseURL`. So
   input that reaches `url` cannot send the request to another host. Set
-  `allowAbsoluteUrls: true` to let absolute URLs override `baseURL`. `autoPaginate` may
+  `allowAbsoluteUrls: true` to permit requests outside that boundary, including relative
+  dot-segment paths such as `../admin`. `autoPaginate` may
   still follow an absolute `next` link; `allowedPaginateHosts` governs where it can go.
 - **Retries and non-idempotent requests.** With `retry` set, a network error, timeout or 5xx
   is retried only for the idempotent methods in `DEFAULT_RETRY_METHODS` (`get`, `head`,
@@ -463,7 +530,20 @@ try {
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
+testing, and pull request guidelines. Development uses the pnpm version pinned in
+`package.json`.
+
+```bash
+pnpm install --frozen-lockfile
+pnpm run lint
+pnpm run typecheck
+pnpm test
+pnpm run test:integration
+```
+
+The integration command builds the package and exercises native Fetch against a local
+HTTP server, including streamed uploads, cancellation, and reader cleanup.
 
 ## 📜 Changelog
 

@@ -53,6 +53,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:integration": "pnpm run build && node --test tests/native-fetch.mjs",
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "release:npm": "gh workflow run publish-npm.yml -f publish_tag=$(git describe --tags --abbrev=0)",
     "typecheck": "tsc --noEmit",

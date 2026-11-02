@@ -35,7 +35,7 @@ function redactHeaders(headers: unknown, seen?: WeakSet<object>): unknown {
   );
 }
 
-const SENSITIVE_BODY_KEY =
+export const SENSITIVE_BODY_KEY =
   /^(password|passwd|pwd|token|access_token|refresh_token|id_token|authorization|api[_-]?key|secret|client[_-]?secret|cookie|set[_-]?cookie|private[_-]?key|session)$/i;
 
 export function redactBody(value: unknown, seen?: WeakSet<object>): unknown {
@@ -218,20 +218,20 @@ export class CorriereError extends Error {
   static ERR_RATE_LIMIT_QUEUE_FULL: string = ErrorCodes.ERR_RATE_LIMIT_QUEUE_FULL;
 
   readonly code: string | null;
-  private _config: CorriereRequestConfig | null;
-  private _redactedConfig: CorriereRequestConfig | null = null;
-  private _response: CorriereResponse | null;
-  private _redactedResponse: CorriereResponse | null = null;
+  #config: CorriereRequestConfig | null;
+  #redactedConfig: CorriereRequestConfig | null = null;
+  #response: CorriereResponse | null;
+  #redactedResponse: CorriereResponse | null = null;
   readonly request: unknown;
   readonly isCorriereError: true;
   cause?: Error;
   override name = 'CorriereError' as const;
 
   get config(): CorriereRequestConfig | null {
-    if (this._redactedConfig === null && this._config !== null) {
-      this._redactedConfig = redactConfig(this._config);
+    if (this.#redactedConfig === null && this.#config !== null) {
+      this.#redactedConfig = redactConfig(this.#config);
     }
-    return this._redactedConfig;
+    return this.#redactedConfig;
   }
 
   /**
@@ -248,14 +248,14 @@ export class CorriereError extends Error {
    * identity across reads and the scrub is paid for only if someone looks.
    */
   get response(): CorriereResponse | null {
-    if (this._response === null) return null;
-    if (this._redactedResponse === null) {
-      this._redactedResponse = {
-        ...this._response,
-        config: redactConfig(this._response.config) as CorriereRequestConfig,
+    if (this.#response === null) return null;
+    if (this.#redactedResponse === null) {
+      this.#redactedResponse = {
+        ...this.#response,
+        config: redactConfig(this.#response.config) as CorriereRequestConfig,
       };
     }
-    return this._redactedResponse;
+    return this.#redactedResponse;
   }
 
   constructor(
@@ -268,9 +268,9 @@ export class CorriereError extends Error {
     super(message);
     this.name = 'CorriereError';
     this.code = code ?? null;
-    this._config = config ?? null;
+    this.#config = config ?? null;
     this.request = request ?? null;
-    this._response = response ?? null;
+    this.#response = response ?? null;
     this.isCorriereError = true;
 
     if ((Error as any).captureStackTrace) {

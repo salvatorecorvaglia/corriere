@@ -382,3 +382,52 @@ describe('logResponse size', () => {
     expect(consoleSpy.mock.calls[0][0]).toContain('Size: ~5.0 B');
   });
 });
+
+describe('bounded debug payload previews', () => {
+  it('does not invoke toJSON or getters while previewing large nested payloads', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const toJSON = vi.fn(() => {
+        throw new Error('must not run');
+      });
+      const getter = vi.fn(() => {
+        throw new Error('must not run');
+      });
+      const data = { password: 'private-value', payload: 'x'.repeat(1_000_000), toJSON };
+      Object.defineProperty(data, 'computed', { enumerable: true, get: getter });
+      logRequest({ debug: true, params: { nested: [{ token: 'private-token' }] }, data }, '/test');
+      const output = String(log.mock.calls[0][0]);
+      expect(output.length).toBeLessThan(1000);
+      expect(output).not.toContain('private-value');
+      expect(output).not.toContain('private-token');
+      logResponse({ config: { debug: true }, headers: {}, status: 200, data } as any);
+      expect(log.mock.calls[1][0]).toContain('Size: [not measured]');
+      expect(toJSON).not.toHaveBeenCalled();
+      expect(getter).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('stops traversing deeply nested values and handles accessors without evaluating them', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      let data: Record<string, unknown> = { leaf: 'value' };
+      for (let i = 0; i < 10000; i++) data = { nested: data };
+      logRequest({ debug: true, data }, '/test');
+      expect(String(log.mock.calls[0][0]).length).toBeLessThan(500);
+      const getter = vi.fn();
+      logRequest(
+        {
+          debug: true,
+          data: Object.defineProperty({}, 'computed', { enumerable: true, get: getter }),
+        },
+        '/test',
+      );
+      expect(log.mock.calls[1][0]).toContain('[Accessor]');
+      expect(getter).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
+});
