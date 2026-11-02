@@ -30,7 +30,7 @@
 
 ---
 
-## Installation 📦
+## Installation
 
 Corriere requires Node.js **22.13.0 or newer**. It uses native `fetch` and Web APIs;
 browser applications need an environment that provides those APIs. The package ships
