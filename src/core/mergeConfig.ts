@@ -15,7 +15,7 @@ function cloneContainer(value: any, seen = new WeakMap<object, any>()): any {
   const copy: Record<string, any> = Array.isArray(value) ? new Array(value.length) : {};
   seen.set(value, copy);
   for (const key of Object.keys(value)) {
-    if (!unsafeKeys.has(key)) {
+    if (key !== '__proto__' && key !== 'constructor' && key !== 'prototype') {
       copy[key] = cloneContainer((value as Record<string, any>)[key], seen);
     }
   }
@@ -28,13 +28,13 @@ function deepMerge(...sources: any[]): Record<string, any> {
   const merge = (target: Record<string, any>, source: Record<string, any>): void => {
     seen.set(source, target);
     for (const key of Object.keys(source)) {
-      if (unsafeKeys.has(key)) continue;
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
       const value = source[key];
       if (value === undefined) continue;
       if (isPlainObject(value)) {
         if (seen.has(value)) target[key] = seen.get(value);
         else {
-          const child = isPlainObject(target[key]) ? target[key] : {};
+          const child = Object.hasOwn(target, key) && isPlainObject(target[key]) ? target[key] : {};
           target[key] = child;
           merge(child, value);
         }

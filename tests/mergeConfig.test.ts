@@ -81,6 +81,40 @@ describe('mergeConfig', () => {
 });
 
 describe('deepMerge', () => {
+  it('discards dangerous keys at every depth, including objects inside arrays', () => {
+    const malicious = JSON.parse(
+      '{"__proto__":{"polluted":true},"constructor":{"prototype":{"polluted":true}},"prototype":{"polluted":true},"nested":{"__proto__":{"polluted":true},"constructor":{"prototype":{"polluted":true}},"prototype":{},"safe":1},"items":[{"__proto__":{"polluted":true},"constructor":{},"prototype":{},"safe":2}]}',
+    );
+
+    const result = deepMerge({}, malicious);
+
+    expect(result).toEqual({ nested: { safe: 1 }, items: [{ safe: 2 }] });
+    for (const container of [result, result.nested, result.items[0]]) {
+      expect(Object.getPrototypeOf(container)).toBe(Object.prototype);
+      for (const key of ['__proto__', 'constructor', 'prototype']) {
+        expect(Object.hasOwn(container, key)).toBe(false);
+      }
+    }
+    expect((Object.prototype as any).polluted).toBeUndefined();
+  });
+
+  it('does not merge into plain objects inherited by the destination', () => {
+    const inherited = { original: true };
+    Object.defineProperty(Object.prototype, 'inheritedMergeContainer', {
+      configurable: true,
+      value: inherited,
+      writable: true,
+    });
+    try {
+      const result = deepMerge({ inheritedMergeContainer: { added: true } });
+      expect(result.inheritedMergeContainer).toEqual({ added: true });
+      expect(result.inheritedMergeContainer).not.toBe(inherited);
+      expect(inherited).toEqual({ original: true });
+    } finally {
+      Reflect.deleteProperty(Object.prototype, 'inheritedMergeContainer');
+    }
+  });
+
   it('merges flat objects', () => {
     expect(deepMerge({ a: 1 }, { b: 2 })).toEqual({ a: 1, b: 2 });
   });
