@@ -1,4 +1,3 @@
-import type CorriereError from '../core/corriereError';
 import { redactURL } from '../core/corriereError';
 import type { CorriereRequestConfig, CorriereResponse } from '../types';
 import { debugPreview } from './debugPreview';
@@ -11,66 +10,89 @@ function formatBytes(bytes: number): string {
 }
 
 export function logRequest(config: CorriereRequestConfig, fullUrl: string): void {
-  if (!config.debug) return;
+  try {
+    if (!config.debug) return;
 
-  const method = (config.method || 'GET').slice(0, 32).toUpperCase();
-  const url = (redactURL(fullUrl || config.url || '') || '').slice(0, 2048);
+    const method = (config.method || 'GET').slice(0, 32).toUpperCase();
+    const url = (redactURL(fullUrl || config.url || '') || '').slice(0, 2048);
 
-  const parts: string[] = [`🔔 [Corriere] → ${method} ${url}`];
+    const parts: string[] = [`🔔 [Corriere] → ${method} ${url}`];
 
-  if (config.params) parts.push(`   Params: ${debugPreview(config.params)}`);
+    if (config.params) parts.push(`   Params: ${debugPreview(config.params)}`);
 
-  if (config.data && typeof config.data === 'object') {
-    parts.push(`   Body: ${debugPreview(config.data)}`);
+    if (config.data && typeof config.data === 'object') {
+      parts.push(`   Body: ${debugPreview(config.data)}`);
+    }
+
+    if (config.timeout) {
+      parts.push(`   Timeout: ${config.timeout}ms`);
+    }
+
+    if (config.retry) {
+      parts.push(`   Retry: ${config.retry}x`);
+    }
+
+    console.log(parts.join('\n'));
+  } catch {
+    // Logging is best-effort and must not change the request outcome.
   }
-
-  if (config.timeout) {
-    parts.push(`   Timeout: ${config.timeout}ms`);
-  }
-
-  if (config.retry) {
-    parts.push(`   Retry: ${config.retry}x`);
-  }
-
-  console.log(parts.join('\n'));
 }
 
 export function logResponse(response: CorriereResponse): void {
-  if (!response.config?.debug) return;
-  const status = response.status;
-  const statusText = (response.statusText || '').slice(0, 256);
-  const duration = response.duration != null ? `${response.duration}ms` : '??';
+  try {
+    if (!response.config?.debug) return;
+    const status = response.status;
+    const statusText = (response.statusText || '').slice(0, 256);
+    const duration = response.duration != null ? `${response.duration}ms` : '??';
 
-  const statusIcon = status >= 200 && status < 300 ? '✅' : status >= 400 ? '❌' : '⚠️';
+    const statusIcon = status >= 200 && status < 300 ? '✅' : status >= 400 ? '❌' : '⚠️';
 
-  const parts: string[] = [`🔔 [Corriere] ← ${statusIcon} ${status} ${statusText} (${duration})`];
+    const parts: string[] = [`🔔 [Corriere] ← ${statusIcon} ${status} ${statusText} (${duration})`];
 
-  // Do not serialize arbitrary payloads merely to estimate their size.
-  const lengthHeader = response.headers?.['content-length'];
-  const declared = Number(Array.isArray(lengthHeader) ? lengthHeader[0] : lengthHeader);
-  if (lengthHeader !== undefined && Number.isFinite(declared) && declared >= 0) {
-    parts.push(`   Size: ~${formatBytes(declared)}`);
-  } else if (typeof response.data === 'string') {
-    parts.push(`   Size: ~${formatBytes(response.data.length)}`);
-  } else if (response.data) {
-    parts.push('   Size: [not measured]');
+    // Do not serialize arbitrary payloads merely to estimate their size.
+    const lengthHeader = response.headers?.['content-length'];
+    const declared = Number(Array.isArray(lengthHeader) ? lengthHeader[0] : lengthHeader);
+    if (lengthHeader !== undefined && Number.isFinite(declared) && declared >= 0) {
+      parts.push(`   Size: ~${formatBytes(declared)}`);
+    } else if (typeof response.data === 'string') {
+      parts.push(`   Size: ~${formatBytes(response.data.length)}`);
+    } else if (response.data) {
+      parts.push('   Size: [not measured]');
+    }
+
+    console.log(parts.join('\n'));
+  } catch {
+    // Logging is best-effort and must not change the request outcome.
   }
-
-  console.log(parts.join('\n'));
 }
 
-export function logError(error: CorriereError, config?: CorriereRequestConfig): void {
-  if (!config?.debug) return;
+export function logError(error: unknown, config?: CorriereRequestConfig): void {
+  try {
+    if (!config?.debug) return;
 
-  const parts: string[] = [`🔔 [Corriere] ← ❌ ERROR: ${error.message.slice(0, 2048)}`];
+    const details = error as {
+      message?: unknown;
+      code?: unknown;
+      response?: { status?: unknown };
+    } | null;
+    const message =
+      typeof details?.message === 'string'
+        ? details.message
+        : typeof error === 'string'
+          ? error
+          : 'Unknown error';
+    const parts: string[] = [`🔔 [Corriere] ← ❌ ERROR: ${message.slice(0, 2048)}`];
 
-  if (error.code) {
-    parts.push(`   Code: ${error.code.slice(0, 128)}`);
+    if (typeof details?.code === 'string') {
+      parts.push(`   Code: ${details.code.slice(0, 128)}`);
+    }
+
+    if (details?.response) {
+      parts.push(`   Status: ${details.response.status}`);
+    }
+
+    console.log(parts.join('\n'));
+  } catch {
+    // Logging is best-effort and must not change the request outcome.
   }
-
-  if (error.response) {
-    parts.push(`   Status: ${error.response.status}`);
-  }
-
-  console.log(parts.join('\n'));
 }

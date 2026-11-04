@@ -1,0 +1,83 @@
+{
+  "methodology": "Same extracted code and 7-sample CPU workloads; control retains per-subscriber snapshots and reconstructs normalized Headers, optimized shares equivalent snapshots and reuses prepared Headers. No network latency. Timings are observations, not CI thresholds.",
+  "control": {
+    "runtime": "v24.18.0",
+    "platform": "darwin-arm64",
+    "cpu": "Apple M5",
+    "payloadBytes": {
+      "small": 150,
+      "large": 267411
+    },
+    "samples": 7,
+    "results": [
+      {
+        "name": "plain-get-small",
+        "operations": 500,
+        "medianMsPerRequest": 0.012207332000000008,
+        "minMsPerRequest": 0.011198750000000018,
+        "maxMsPerRequest": 0.014051249999999996
+      },
+      {
+        "name": "cache-hit-small",
+        "operations": 1000,
+        "medianMsPerRequest": 0.0059692090000000066,
+        "minMsPerRequest": 0.005714124999999995,
+        "maxMsPerRequest": 0.007020416999999995
+      },
+      {
+        "name": "cache-hit-large",
+        "operations": 100,
+        "medianMsPerRequest": 0.0786420799999999,
+        "minMsPerRequest": 0.07647124999999988,
+        "maxMsPerRequest": 0.08353250000000002
+      },
+      {
+        "name": "dedupe-cache-large-16",
+        "operations": 128,
+        "medianMsPerRequest": 0.1681796874999999,
+        "minMsPerRequest": 0.16357226562500005,
+        "maxMsPerRequest": 0.181139328125
+      }
+    ]
+  },
+  "optimized": {
+    "runtime": "v24.18.0",
+    "platform": "darwin-arm64",
+    "cpu": "Apple M5",
+    "payloadBytes": {
+      "small": 150,
+      "large": 267411
+    },
+    "samples": 7,
+    "results": [
+      {
+        "name": "plain-get-small",
+        "operations": 500,
+        "medianMsPerRequest": 0.012197668000000021,
+        "minMsPerRequest": 0.011236249999999998,
+        "maxMsPerRequest": 0.013178917999999996
+      },
+      {
+        "name": "cache-hit-small",
+        "operations": 1000,
+        "medianMsPerRequest": 0.005456167000000022,
+        "minMsPerRequest": 0.005269833000000006,
+        "maxMsPerRequest": 0.005885833000000005
+      },
+      {
+        "name": "cache-hit-large",
+        "operations": 100,
+        "medianMsPerRequest": 0.07457374999999984,
+        "minMsPerRequest": 0.07343124999999986,
+        "maxMsPerRequest": 0.08200000000000017
+      },
+      {
+        "name": "dedupe-cache-large-16",
+        "operations": 128,
+        "medianMsPerRequest": 0.09409407812499992,
+        "minMsPerRequest": 0.09215136718750028,
+        "maxMsPerRequest": 0.10899121093749997
+      }
+    ]
+  }
+}

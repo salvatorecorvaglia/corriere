@@ -1,7 +1,10 @@
+import { CREDENTIAL_HEADERS } from '../helpers/credentialHeaders';
 import parseHeaders from '../helpers/parseHeaders';
+import { wrapReadableStream } from '../helpers/responseStream';
 import type { CorriereRequestConfig, CorriereResponse } from '../types';
-import CorriereError from './corriereError';
+import CorriereError, { redactURL } from './corriereError';
 import { assertAllowedProtocol } from './protocol';
+import { rememberRequestURL } from './responseURL';
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
@@ -11,7 +14,7 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
  * Exported because `autoPaginate` needs the same list: an API's `next` link is an
  * unvalidated, server-controlled URL, which is exactly the situation a redirect hop is.
  */
-export const CREDENTIAL_HEADERS = ['authorization', 'cookie', 'proxy-authorization'];
+export { CREDENTIAL_HEADERS } from '../helpers/credentialHeaders';
 
 function sameOrigin(a: string, b: string): boolean {
   try {
@@ -38,7 +41,9 @@ async function fetchFollowingRedirects(
   const max = config.maxRedirects;
 
   if (max === undefined) {
-    return await fetchImpl(startURL, fetchOptions);
+    const response = await fetchImpl(startURL, fetchOptions);
+    rememberRequestURL(response, startURL);
+    return response;
   }
 
   if (typeof max !== 'number' || !Number.isInteger(max) || max < 0) {
@@ -67,6 +72,7 @@ async function fetchFollowingRedirects(
       headers: new Headers(headers),
       redirect: 'manual',
     });
+    rememberRequestURL(response, startURL, currentURL);
 
     let returned = false;
     try {
@@ -117,7 +123,7 @@ async function fetchFollowingRedirects(
         nextURL = new URL(location, currentURL).toString();
       } catch {
         throw new CorriereError(
-          `Invalid redirect location: ${location}`,
+          `Invalid redirect location: ${redactURL(location)}`,
           CorriereError.ERR_INVALID_URL,
           config,
           response,
@@ -233,7 +239,7 @@ function assertValidURL(fullURL: string, config: CorriereRequestConfig): void {
     new URL(fullURL);
   } catch {
     throw new CorriereError(
-      `Invalid URL: ${fullURL}`,
+      `Invalid URL: ${redactURL(fullURL)}`,
       CorriereError.ERR_INVALID_URL,
       config,
       null,
@@ -292,6 +298,7 @@ function setupAbort(config: CorriereRequestConfig, fetchOptions: RequestInit): A
         null,
       ),
     );
+    cleanup();
   }, timeoutValue);
 
   // For `responseType: 'stream'` the timer is cleared when the stream finishes, so a
@@ -301,13 +308,24 @@ function setupAbort(config: CorriereRequestConfig, fetchOptions: RequestInit): A
   (timeoutId as unknown as { unref?: () => void })?.unref?.();
 
   let onUserAbort: (() => void) | null = null;
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    clearTimeout(timeoutId);
+    if (onUserAbort && config.signal) {
+      config.signal.removeEventListener('abort', onUserAbort);
+    }
+  };
 
   if (config.signal) {
     if (config.signal.aborted) {
       abortController.abort(config.signal.reason);
+      cleanup();
     } else {
       onUserAbort = () => {
         if (!timedOut) abortController.abort(config.signal!.reason);
+        cleanup();
       };
       config.signal.addEventListener('abort', onUserAbort, { once: true });
     }
@@ -318,12 +336,7 @@ function setupAbort(config: CorriereRequestConfig, fetchOptions: RequestInit): A
 
   return {
     isTimedOut: () => timedOut,
-    cleanup: () => {
-      clearTimeout(timeoutId);
-      if (onUserAbort && config.signal) {
-        config.signal.removeEventListener('abort', onUserAbort);
-      }
-    },
+    cleanup,
   };
 }
 
@@ -339,46 +352,23 @@ function wrapResponseStream(fetchResponse: Response, config: CorriereRequestConf
   const total = contentLength ? Number.parseInt(contentLength, 10) : 0;
   let loaded = 0;
 
-  const reader = fetchResponse.body.getReader();
-  // One chunk per `pull` — driven by consumer demand. Reading the whole body inside
-  // `start` would discard backpressure and buffer the entire response in the controller's
-  // queue, which defeats `responseType: 'stream'` for large payloads.
-  const stream = new ReadableStream({
-    async pull(controller) {
-      try {
-        const { done, value } = await reader.read();
-        if (done) {
-          controller.close();
-          return;
-        }
-        loaded += value.byteLength;
-
-        if (hasLimit && loaded > config.maxContentLength!) {
-          const limitError = new CorriereError(
-            `maxContentLength size of ${config.maxContentLength} exceeded`,
-            CorriereError.ERR_BAD_RESPONSE,
-            config,
-            fetchResponse,
-            null,
-          );
-          controller.error(limitError);
-          await reader.cancel(limitError).catch(() => {});
-          return;
-        }
-
-        if (hasProgress) {
-          config.onDownloadProgress!({ loaded, total });
-        }
-
-        controller.enqueue(value);
-      } catch (e) {
-        controller.error(e);
+  const stream = wrapReadableStream(
+    fetchResponse.body,
+    () => {},
+    (value) => {
+      loaded += value.byteLength;
+      if (hasLimit && loaded > config.maxContentLength!) {
+        throw new CorriereError(
+          `maxContentLength size of ${config.maxContentLength} exceeded`,
+          CorriereError.ERR_BAD_RESPONSE,
+          config,
+          fetchResponse,
+          null,
+        );
       }
+      if (hasProgress) config.onDownloadProgress!({ loaded, total });
     },
-    cancel(reason) {
-      reader.cancel(reason).catch(() => {});
-    },
-  });
+  );
 
   return new Response(stream, {
     headers: fetchResponse.headers,
@@ -449,6 +439,13 @@ function wrapStreamWithCleanup(stream: any, cleanup: () => void): any {
   if (!stream) return stream;
 
   const onceCleanup = createStreamCleanup(cleanup);
+  if (typeof stream.getReader === 'function') {
+    const wrapped = wrapReadableStream(stream, onceCleanup);
+    streamCleanupRegistry?.register(wrapped, onceCleanup, onceCleanup);
+    return wrapped;
+  }
+  // Compatibility for response-like custom fetch implementations returning Node
+  // streams instead of a Web Stream.
   streamCleanupRegistry?.register(stream, onceCleanup, onceCleanup);
 
   if (typeof stream.cancel === 'function') {
@@ -459,39 +456,6 @@ function wrapStreamWithCleanup(stream: any, cleanup: () => void): any {
       } finally {
         onceCleanup();
       }
-    };
-  }
-
-  // If it has a cancel method (Web Stream)
-  if (typeof stream.getReader === 'function') {
-    const originalGetReader = stream.getReader;
-    stream.getReader = (...args: any[]) => {
-      const reader = originalGetReader.apply(stream, args);
-      const originalRead = reader.read;
-      const originalCancel = reader.cancel;
-
-      reader.read = async () => {
-        try {
-          const result = await originalRead.call(reader);
-          if (result.done) {
-            onceCleanup();
-          }
-          return result;
-        } catch (err) {
-          onceCleanup();
-          throw err;
-        }
-      };
-
-      reader.cancel = async (...cancelArgs: any[]) => {
-        try {
-          return await originalCancel.apply(reader, cancelArgs);
-        } finally {
-          onceCleanup();
-        }
-      };
-
-      return reader;
     };
   }
 
@@ -590,8 +554,8 @@ export default async function fetchAdapter(
     try {
       responseData = await readResponseData(fetchResponse, config, rawResponse, requestStartTime);
       if (config.responseType === 'stream') {
-        isStream = responseData != null;
         responseData = wrapStreamWithCleanup(responseData, abort.cleanup);
+        isStream = responseData != null;
       }
       // `config.schema` is applied later, in the request pipeline, so it validates the data
       // the caller actually receives — after `transformResponse` and after the status check.

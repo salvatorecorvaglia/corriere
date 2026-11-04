@@ -57,13 +57,19 @@
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "release:npm": "gh workflow run publish-npm.yml -f publish_tag=$(git describe --tags --abbrev=0)",
     "typecheck": "tsc --noEmit",
-    "verify:package": "node scripts/verify-package.mjs"
+    "verify:package": "node scripts/verify-package.mjs",
+    "test:browser:real": "pnpm run build && playwright test",
+    "verify:installed": "node scripts/verify-installed-package.mjs",
+    "bench": "pnpm run build && node --expose-gc scripts/benchmark.mjs",
+    "lint:package": "publint"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.4",
+    "@playwright/test": "1.64.1",
     "@types/node": "^26.6.6",
     "@vitest/coverage-v8": "^5.0.5",
     "jsdom": "^30.1.3",
+    "publint": "0.3.25",
     "tsup": "^9.0.0",
     "typescript": "^6.0.3",
     "vitest": "^5.0.5"

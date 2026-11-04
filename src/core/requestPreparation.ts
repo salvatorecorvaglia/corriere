@@ -1,5 +1,6 @@
 import { validateStreamLimits } from '../features/stream';
 import { setBasicAuth } from '../helpers/auth';
+import { CREDENTIAL_HEADERS } from '../helpers/credentialHeaders';
 import { logRequest } from '../helpers/debug';
 import { buildFetchHeaders, flattenHeaders, removeContentType } from '../helpers/flattenHeaders';
 import { isReadableStream } from '../helpers/isBinary';
@@ -7,7 +8,6 @@ import transformData from '../helpers/transformData';
 import type { CorriereRequestConfig, InternalConfig } from '../types';
 import { resolveURL } from './buildURL';
 import CorriereError from './corriereError';
-import { CREDENTIAL_HEADERS } from './fetchAdapter';
 import { assertAllowedProtocol } from './protocol';
 
 type FlatHeaders = Record<string, string | string[]>;

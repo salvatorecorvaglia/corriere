@@ -38,6 +38,11 @@ function redactHeaders(headers: unknown, seen?: WeakSet<object>): unknown {
 export const SENSITIVE_BODY_KEY =
   /^(password|passwd|pwd|token|access_token|refresh_token|id_token|authorization|api[_-]?key|secret|client[_-]?secret|cookie|set[_-]?cookie|private[_-]?key|session)$/i;
 
+/** Match sensitive names at any level of a bracketed or dotted query path. */
+export function isSensitiveKey(key: string): boolean {
+  return key.split(/[.[\]]+/).some((part) => SENSITIVE_BODY_KEY.test(part));
+}
+
 export function redactBody(value: unknown, seen?: WeakSet<object>): unknown {
   if (value === null || typeof value !== 'object') return value;
 
@@ -78,7 +83,7 @@ export function redactBody(value: unknown, seen?: WeakSet<object>): unknown {
             break;
           }
           const v = (value as Record<string, unknown>)[key];
-          if (SENSITIVE_BODY_KEY.test(key)) {
+          if (isSensitiveKey(key)) {
             out[key] = '[REDACTED]';
           } else {
             out[key] = redactBody(v, visited);
@@ -90,7 +95,7 @@ export function redactBody(value: unknown, seen?: WeakSet<object>): unknown {
 
       for (const key of keys) {
         const v = (value as Record<string, unknown>)[key];
-        if (SENSITIVE_BODY_KEY.test(key)) {
+        if (isSensitiveKey(key)) {
           out[key] = '[REDACTED]';
         } else {
           out[key] = redactBody(v, visited);
@@ -103,27 +108,10 @@ export function redactBody(value: unknown, seen?: WeakSet<object>): unknown {
 }
 
 export function redactParams(params: unknown, seen?: WeakSet<object>): unknown {
-  if (!params || typeof params !== 'object') return params;
-  const visited = seen ?? new WeakSet<object>();
-  return withCycleGuard<unknown>(
-    params as object,
-    visited,
-    () => {
-      const out: Record<string, unknown> = {};
-      for (const key of Object.keys(params as Record<string, unknown>)) {
-        const value = (params as Record<string, unknown>)[key];
-        if (SENSITIVE_BODY_KEY.test(key)) {
-          out[key] = '[REDACTED]';
-        } else if (value && typeof value === 'object' && !Array.isArray(value)) {
-          out[key] = redactParams(value, visited);
-        } else {
-          out[key] = value;
-        }
-      }
-      return out;
-    },
-    () => '[Circular]',
-  );
+  if (typeof URLSearchParams !== 'undefined' && params instanceof URLSearchParams) {
+    return Array.from(params, ([key, value]) => [key, isSensitiveKey(key) ? '[REDACTED]' : value]);
+  }
+  return redactBody(params, seen);
 }
 
 export function redactURL(url: string | undefined): string | undefined {
@@ -161,7 +149,7 @@ export function redactURL(url: string | undefined): string | undefined {
         // Malformed percent-encoding: fall back to the raw key rather than throwing out
         // of a getter (`error.config`) that callers reasonably expect to never fail.
       }
-      if (SENSITIVE_BODY_KEY.test(decodedKey)) {
+      if (isSensitiveKey(decodedKey)) {
         return `${key}=[REDACTED]`;
       }
       return part;
@@ -185,7 +173,9 @@ export function redactConfig(config: CorriereRequestConfig | null): CorriereRequ
   if ('auth' in clone) clone.auth = undefined;
   if (clone.headers) clone.headers = redactHeaders(clone.headers) as typeof clone.headers;
   if (clone.params) clone.params = redactParams(clone.params) as typeof clone.params;
-  if (clone.data !== undefined && clone.data !== null) clone.data = redactBody(clone.data);
+  // Opaque text may be JSON, a form body, or arbitrary credentials. Do not guess its format.
+  if (clone.data !== undefined && clone.data !== null)
+    clone.data = typeof clone.data === 'string' ? '[REDACTED]' : redactBody(clone.data);
   if (clone.url) clone.url = redactURL(clone.url);
   if (clone.baseURL) clone.baseURL = redactURL(clone.baseURL);
   const internal = clone as InternalConfig;

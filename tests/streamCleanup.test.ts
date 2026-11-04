@@ -102,6 +102,30 @@ describe('stream response cleanup', () => {
   });
 
   describe('with a Node stream body', () => {
+    it.each(['drain', 'stop', 'error'] as const)(
+      'releases an async iterator on %s',
+      async (mode) => {
+        const node = Readable.from(
+          (async function* () {
+            yield 'first';
+            if (mode === 'error') throw new Error('source failed');
+            yield 'second';
+          })(),
+        );
+        serveBody(node);
+        const { signal, released } = watchedSignal();
+        const body = await getStream(signal);
+        const consume = async () => {
+          for await (const _ of body) {
+            if (mode === 'stop') break;
+          }
+        };
+        if (mode === 'error') await expect(consume()).rejects.toThrow('source failed');
+        else await consume();
+        expect(released()).toBe(true);
+      },
+    );
+
     it('is released when the stream ends', async () => {
       const node = Readable.from(['a', 'b']);
       serveBody(node);

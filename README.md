@@ -147,6 +147,9 @@ for await (const item of pageGenerator) {
 When a pagination `next` link includes a query key, it replaces the matching initial or
 instance-default parameter for the remaining chain. Other parameters, such as filters,
 are preserved. Custom parameter serializers receive only the remaining parameters.
+Relative links resolve against the current page's effective response URL, including
+after redirects. Set `maxPages` to a positive safe integer to change the default limit of
+1,000 pages.
 
 ### 3. GraphQL 🕸️
 
@@ -369,7 +372,10 @@ const response = await corriere.get('https://api.example.com/large-dataset.json'
   is retried only for the idempotent methods in `DEFAULT_RETRY_METHODS` (`get`, `head`,
   `options`, `put`, `delete`). `POST` and `PATCH` are not retried, since the server may
   already have applied the first attempt; list them in `retryMethods` if repeats are safe.
-  A `429` is retried for any method, since the server did not process it.
+  The same method limits apply to `429` responses, including with `retryOn429: true`;
+  a rate-limit response does not guarantee that a non-idempotent operation had no effect.
+  `retry` must be a non-negative safe integer. `retryDelay` and `maxRetryDelay` must be
+  finite durations from `0` to `2147483647` ms. Invalid values reject before transport.
 - **Unparseable JSON.** When a body labelled JSON fails to parse, the error message states
   only the position and length, never the body. The raw body is on `error.response.data`.
 - **Cache keys.** The header portion of a cache key is hashed, so a `CacheProvider` never

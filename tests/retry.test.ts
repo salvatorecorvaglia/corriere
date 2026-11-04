@@ -541,7 +541,7 @@ describe('onRetry is an observer, not a failure path', () => {
 /**
  * Every method was retried on network errors, timeouts and 5xx — including POST and PATCH,
  * where a retry after an unknown outcome can apply the request twice. `retryMethods` limits
- * those retries to the methods listed. The default stays "every method" in 1.x.
+ * those retries to the listed methods, defaulting to idempotent methods.
  */
 describe('retryMethods', () => {
   const networkError = () =>
@@ -613,7 +613,7 @@ describe('retryMethods', () => {
     expect(dispatch).toHaveBeenCalledTimes(2);
   });
 
-  it('still retries a 429 for an unlisted method, since the server did not process it', async () => {
+  it('does not retry a 429 for an unlisted method', async () => {
     const err = new CorriereError(
       'rate limited',
       CorriereError.ERR_BAD_REQUEST,
@@ -633,13 +633,15 @@ describe('retryMethods', () => {
       },
     });
     const dispatch = vi.fn().mockRejectedValueOnce(err).mockResolvedValueOnce({ status: 200 });
-    await retryRequest(dispatch, {
-      method: 'post',
-      retryOn429: true,
-      retryDelay: 1,
-      retryMethods: ['get'],
-    });
-    expect(dispatch).toHaveBeenCalledTimes(2);
+    await expect(
+      retryRequest(dispatch, {
+        method: 'post',
+        retryOn429: true,
+        retryDelay: 1,
+        retryMethods: ['get'],
+      }),
+    ).rejects.toBe(err);
+    expect(dispatch).toHaveBeenCalledTimes(1);
   });
 });
 

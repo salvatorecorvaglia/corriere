@@ -1,4 +1,4 @@
-import { SENSITIVE_BODY_KEY } from '../core/corriereError';
+import { isSensitiveKey } from '../core/corriereError';
 import { isBinaryData, isReadableStream } from './isBinary';
 
 /** A bounded preview that never invokes getters or user-supplied toJSON methods. */
@@ -66,7 +66,7 @@ export function debugPreview(value: unknown, maxLength = 200): string {
         quote(key);
         append(':');
       }
-      if (SENSITIVE_BODY_KEY.test(key)) {
+      if (isSensitiveKey(key)) {
         quote('[REDACTED]');
         continue;
       }

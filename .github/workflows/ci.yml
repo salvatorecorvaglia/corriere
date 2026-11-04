@@ -70,6 +70,29 @@ jobs:
         run: pnpm run test:coverage
       - run: pnpm run test:integration
 
+  browser:
+    name: Real browsers (Chromium, Firefox, WebKit)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium firefox webkit
+      - run: pnpm run test:browser:real
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: browser-test-results
+          path: test-results/
+          retention-days: 7
+
   package:
     name: Validate npm package
     runs-on: ubuntu-24.04
@@ -89,18 +112,9 @@ jobs:
       - name: Verify built package loads
         run: pnpm run verify:package
       - name: Lint package metadata
-        run: npx --yes publint
-      - name: Verify installed tarball
-        shell: bash
-        run: |
-          set -euo pipefail
-          package=$(realpath dist/*.tgz)
-          smoke_dir=$(mktemp -d)
-          cd "$smoke_dir"
-          npm init -y
-          npm install --ignore-scripts "$package"
-          node --input-type=module -e "import('corriere')"
-          node -e "require('corriere')"
+        run: pnpm run lint:package
+      - name: Verify installed tarball and declarations
+        run: pnpm run verify:installed dist/*.tgz
       - run: (cd dist && sha256sum *.tgz > SHA256SUMS)
       - uses: actions/upload-artifact@v7
         with:

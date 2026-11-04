@@ -71,3 +71,7 @@ claude-settings.json
 .windsurf/
 .cline/
 CLAUDE.md
+
+# Real-browser test artifacts
+playwright-report/
+test-results/

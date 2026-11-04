@@ -76,18 +76,21 @@ export interface ServerSentEvent<T = unknown> {
   /** The last event ID the stream set with `id:`, if any. It carries over between events. */
   id?: string;
   /** A `retry:` reconnection time in milliseconds, on the first event after it was sent. */
+  /** Maximum retries after the first attempt; a non-negative safe integer (default 0). */
   retry?: number;
 }
 
 export type HeaderValue = string | string[];
 
 /** A flat set of headers: name → value. */
-export type RawHeaders = Record<string, HeaderValue>;
+export type RawHeaders = Record<string, HeaderValue | undefined>;
 
 /**
  * Request headers. Flat headers and per-method groups can be mixed in one object:
  * `common` applies to every request, a method group (`get`, `post`, …) to that method, and
- * any other key is a header sent on every request. A header set to `undefined` is omitted.
+ * any other key is a header sent on every request. A header set to `undefined` is omitted,
+ * overriding inherited values case-insensitively within the same group. Flat headers
+ * take precedence over method groups, which take precedence over `common`.
  */
 export interface CorriereHeaders {
   common?: RawHeaders;
@@ -156,10 +159,11 @@ export interface CorriereRequestConfig {
    * Methods that may be retried after a network error, timeout or 5xx — failures where the
    * server may already have acted on the request. Case-insensitive. Defaults to the
    * idempotent methods, `DEFAULT_RETRY_METHODS` (`get`, `head`, `options`, `put`,
-   * `delete`), so a `POST` or `PATCH` is never sent twice unless you list it. A `429` is
-   * retried for any method, since the server did not process the request.
+   * `delete`), so a `POST` or `PATCH` is never sent twice unless you list it. This
+   * allowlist also applies to 429 responses and custom retry conditions.
    */
   retryMethods?: readonly string[];
+  /** Initial backoff in ms, finite and between 0 and 2^31-1 (default 1000). */
   retryDelay?: number;
   retryCondition?: RetryConditionFunction;
   onRetry?: OnRetryFunction;
@@ -190,6 +194,7 @@ export interface CorriereRequestConfig {
   agent?: unknown;
   dedupe?: boolean;
   cache?: boolean | CacheProvider;
+  /** Cache lifetime in ms. Dedupe callers retain their own provider and TTL preferences. */
   cacheTTL?: number;
   cacheKeySerializer?: (
     config: CorriereRequestConfig,
@@ -200,13 +205,16 @@ export interface CorriereRequestConfig {
   hooks?: CorriereHooks;
   schema?: SchemaValidator;
   fetch?: typeof fetch;
+  /** Permit up to at least three retries on 429, subject to retryMethods. */
   retryOn429?: boolean;
+  /** Maximum backoff in ms, finite and between 0 and 2^31-1 (default 30000). */
   maxRetryDelay?: number;
   formSerializer?: { brackets?: boolean };
+  /** Clone shared payload data by default. Header containers and arrays are always copied. */
   cacheClone?: boolean;
   paginateItems?: string | ((data: any) => any[]);
   /**
-   * Upper bound on pages fetched by `autoPaginate` (default 1000). Guards against an API
+   * Positive safe integer bounding pages fetched by `autoPaginate` (default 1000). Guards against an API
    * whose `next` link never terminates; a repeated URL is rejected immediately regardless.
    */
   maxPages?: number;

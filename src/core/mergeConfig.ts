@@ -1,53 +1,95 @@
 import type { CorriereRequestConfig } from '../types';
 
-function deepMerge(...sources: any[]): Record<string, any> {
-  const result: Record<string, any> = {};
+const unsafeKeys = new Set<string>(['__proto__', 'constructor', 'prototype']);
 
-  for (const source of sources) {
-    if (!source || typeof source !== 'object') continue;
+function isPlainObject(value: unknown): value is Record<string, any> {
+  if (!value || typeof value !== 'object') return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
 
-    for (const key of Object.keys(source)) {
-      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
-
-      const value = source[key];
-
-      if (value && typeof value === 'object' && !Array.isArray(value)) {
-        if (
-          value instanceof Date ||
-          value instanceof RegExp ||
-          value instanceof Map ||
-          value instanceof Set ||
-          value instanceof Error ||
-          (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) ||
-          (typeof Blob !== 'undefined' && value instanceof Blob)
-        ) {
-          result[key] = value;
-        } else if (result[key] && typeof result[key] === 'object' && !Array.isArray(result[key])) {
-          result[key] = deepMerge(result[key], value);
-        } else {
-          result[key] = deepMerge(value);
-        }
-      } else if (value !== undefined) {
-        result[key] = value;
-      }
+/** Copy configuration containers, preserving opaque objects such as transports. */
+function cloneContainer(value: any, seen = new WeakMap<object, any>()): any {
+  if (!Array.isArray(value) && !isPlainObject(value)) return value;
+  if (seen.has(value)) return seen.get(value);
+  const copy: Record<string, any> = Array.isArray(value) ? new Array(value.length) : {};
+  seen.set(value, copy);
+  for (const key of Object.keys(value)) {
+    if (!unsafeKeys.has(key)) {
+      copy[key] = cloneContainer((value as Record<string, any>)[key], seen);
     }
   }
+  return copy;
+}
 
+function deepMerge(...sources: any[]): Record<string, any> {
+  const result: Record<string, any> = {};
+  const seen = new WeakMap<object, any>();
+  const merge = (target: Record<string, any>, source: Record<string, any>): void => {
+    seen.set(source, target);
+    for (const key of Object.keys(source)) {
+      if (unsafeKeys.has(key)) continue;
+      const value = source[key];
+      if (value === undefined) continue;
+      if (isPlainObject(value)) {
+        if (seen.has(value)) target[key] = seen.get(value);
+        else {
+          const child = isPlainObject(target[key]) ? target[key] : {};
+          target[key] = child;
+          merge(child, value);
+        }
+      } else {
+        target[key] = cloneContainer(value, seen);
+      }
+    }
+  };
+  for (const source of sources) {
+    if (isPlainObject(source)) merge(result, source);
+  }
+  return result;
+}
+
+const headerGroups = new Set([
+  'common',
+  'get',
+  'head',
+  'post',
+  'put',
+  'patch',
+  'delete',
+  'options',
+]);
+
+/** Undefined header values are tombstones, retained until headers are flattened. */
+function mergeHeaders(...sources: any[]): Record<string, any> {
+  const result: Record<string, any> = {};
+  const names = new Map<string, string>();
+  for (const source of sources) {
+    if (!isPlainObject(source)) continue;
+    for (const key of Object.keys(source)) {
+      if (unsafeKeys.has(key)) continue;
+      const lower = key.toLowerCase();
+      const previous = names.get(lower);
+      const value = source[key];
+      const merged =
+        headerGroups.has(key) && isPlainObject(value)
+          ? mergeHeaders(previous ? result[previous] : undefined, value)
+          : cloneContainer(value);
+      if (previous !== undefined) delete result[previous];
+      result[key] = merged;
+      names.set(lower, key);
+    }
+  }
   return result;
 }
 
 const requestOnlyKeys = new Set<string>(['url', 'data', 'signal']);
-const deepMergeKeys = new Set<string>(['headers', 'params', 'hooks']);
-const unsafeKeys = new Set<string>(['__proto__', 'constructor', 'prototype']);
+const containerKeys = new Set<string>(['params', 'hooks', 'auth', 'formSerializer']);
 
-/**
- * Arrays are copied rather than shared. `transformRequest`/`transformResponse` live on the
- * module-level `defaults` object, so assigning the reference straight through meant every
- * instance shared one array — `instance.defaults.transformRequest.push(fn)` mutated the
- * transforms of every other instance, including the global default export.
- */
-function copyArrays<T>(value: T): T {
-  return (Array.isArray(value) ? [...value] : value) as T;
+function copyValue(key: string, value: any): any {
+  if (key === 'headers') return mergeHeaders(value);
+  if (containerKeys.has(key)) return cloneContainer(value);
+  return Array.isArray(value) ? [...value] : value;
 }
 
 export default function mergeConfig(
@@ -55,29 +97,20 @@ export default function mergeConfig(
   config2: CorriereRequestConfig = {},
 ): CorriereRequestConfig {
   const merged: any = {};
-
-  const keys1 = Object.keys(config1);
-  for (let i = 0; i < keys1.length; i++) {
-    const key = keys1[i];
+  for (const key of Object.keys(config1)) {
     if (requestOnlyKeys.has(key) || unsafeKeys.has(key)) continue;
-    merged[key] = copyArrays(config1[key as keyof CorriereRequestConfig]);
+    merged[key] = copyValue(key, config1[key as keyof CorriereRequestConfig]);
   }
-
-  const keys2 = Object.keys(config2);
-  for (let i = 0; i < keys2.length; i++) {
-    const key = keys2[i];
+  for (const key of Object.keys(config2)) {
     if (unsafeKeys.has(key)) continue;
-    const val2 = config2[key as keyof CorriereRequestConfig];
-    if (val2 !== undefined) {
-      if (deepMergeKeys.has(key)) {
-        const val1 = config1[key as keyof CorriereRequestConfig];
-        merged[key] = deepMerge(val1 || {}, val2);
-      } else {
-        merged[key] = copyArrays(val2);
-      }
-    }
+    const value = config2[key as keyof CorriereRequestConfig];
+    if (value === undefined) continue;
+    const inherited = config1[key as keyof CorriereRequestConfig];
+    if (key === 'headers') merged[key] = mergeHeaders(inherited, value);
+    else if ((key === 'params' || key === 'hooks') && isPlainObject(value)) {
+      merged[key] = deepMerge(inherited, value);
+    } else merged[key] = copyValue(key, value);
   }
-
   return merged;
 }
 

@@ -9,10 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add a real-browser Playwright suite for Chromium, Firefox, and WebKit, covering distributed ESM loading without Node globals, native requests/forms, redirects, caching/deduplication, streaming, BYOB capability, pagination, timeouts, cancellation, and redaction. Run it in a dedicated CI job alongside the existing jsdom suite.
+- Add isolated installed-tarball ESM/CJS runtime and declaration checks, a pinned publint check, and repeatable CPU benchmarks with JSON output and baseline comparisons.
 - Add `pnpm test:integration` to build the package and exercise native Node Fetch against a local HTTP server, covering streamed uploads, cancellation and timeout handling after headers, redirect cleanup, and stream line limits.
 
 ### Changed
 
+- Extract cache identity, registry ownership, inflight subscriptions, response caching, and response processing from the dispatcher into focused private modules. Centralize credential-header policy and enable strict property initialization and switch fallthrough checks.
+- Enforce `retryMethods` for 429 responses and custom retry conditions. POST and PATCH require explicit inclusion even with `retryOn429: true`.
+- Reject invalid retry counts, backoff durations, method lists, and pagination page limits before transport; require finite timer-safe delays and safe integer count limits.
+- Include every explicit request header as unambiguous canonical tuples in built-in cache and deduplication identities, reusing normalized request headers. Keys now use `v4`; older entries are ignored and may expire normally. Custom key serializers remain unchanged.
+- Apply deduplicated callers' cache policies independently, sharing raw snapshots and coalescing writes only for the same provider, key, TTL, and payload-cloning option while preserving independent caller responses. Different TTLs targeting one provider/key produce separate writes; the provider's write ordering determines the final entry and expiry.
 - Refresh development dependencies and pnpm workspace dependency policies.
 - Enable protective defaults: a 64 MiB estimated MemoryCache payload budget, 1 MiB stream line limit, and 8 MiB SSE event limit. Configure the cache with `new MemoryCache(maxItems, maxBytes)` and stream parsers with `maxStreamLineBytes` / `maxStreamEventBytes`; `Infinity` opts out.
 - Bound debug payload traversal and previews, avoid getters and custom serialization methods, cap logged metadata strings, and omit whole-object response size estimation.
@@ -24,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Resolve pagination links against the effective page URL, including redirected pages, while retaining the original request origin for host checks and credential stripping. Track transport URLs without rerunning parameter serializers; validate next links and detect repeated effective pages and link targets.
+- Keep exponential retry backoffs finite at large attempt counts, preserve unknown rejection values, and prevent custom conditions from retrying cancellation.
+- Observe native Web Stream completion, errors, and cancellation at the source boundary so piping, teeing, readers, and async iteration release timeout wiring without patched public methods. Preserve BYOB support through response-size wrappers and release source-reader locks on completion.
+- Cancel source readers when progress callbacks fail, preserving the original error if cancellation also fails. Release timeout and caller-abort wiring exactly once even when a streamed body remains unread.
+- Clone response header arrays for cache snapshots, cache hits, and deduplicated deliveries, including when payload cloning is disabled.
+- Populate each dedupe subscriber's cache after its own transforms and status checks succeed, even when the first subscriber disables caching or rejects the response. Isolate cache-provider failures to subscribers using the same write policy.
+- Isolate request headers, parameters, hooks, auth, and form options from mutable defaults; preserve opaque transport, schema, and cache-provider identities.
+- Honor case-insensitive inherited header removal with `undefined`, including method groups, without reviving lower-priority headers.
+- Redact opaque string request bodies, nested parameter arrays, bracketed query keys, and URLs in validation and pagination-cycle errors. Keep debug logging failures from changing request outcomes.
 - Track cache accounting across eviction, expiration, updates, deletion, and clear; skip oversized or unmeasurable values and cancel stream readers when parser budgets are exceeded.
 - Separate response-size, redirect, and protocol policies in built-in sharing keys, including inflight isolation with custom keys. Bypass deduplication for download-progress observers so every caller receives its own events.
 - Resolve templated base URL paths before checking the final request boundary, preserving valid base templates without invoking custom parameter serializers twice.
@@ -42,7 +58,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Set `duplex: 'half'` for streamed request bodies so native Node Fetch accepts uploads.
 - Release original response streams when status checks, transforms, schemas, or response hooks reject; clear timeout wiring for bodyless stream responses.
 - Keep raw error configs and responses in runtime-private fields so Node inspection does not expose request credentials, including through nested CorriereError causes.
-- Canonicalize headers as unambiguous tuples for cache and deduplication keys. Built-in keys now use `v3`; existing `v2` entries are ignored and may expire normally. Custom key serializers are unchanged.
 - Validate the final request URL against `baseURL` after joining and path substitution, blocking relative and encoded dot-segment escapes. `allowAbsoluteUrls: true` retains the explicit opt-out.
 - Redact sensitive query parameters and inline passwords in base-boundary error messages.
 
