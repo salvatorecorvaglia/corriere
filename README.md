@@ -98,6 +98,7 @@ const response = await client.get('/projects');
 ### 1. Server-Sent Events & Streaming 🌊
 
 Read streams using `async generators`. Each value is returned as parsed JSON when it parses and as a string otherwise.
+
 - When the response is `text/event-stream`, the body is parsed as Server-Sent Events with CR, LF, or CRLF line endings: each event yields its `data` (multi-line `data:` fields are joined with `\n`), `event:`/`id:`/`retry:`/comment lines are skipped, and a `[DONE]` event is dropped.
 - Any other body is read line by line (split on `\n`), with a leading `data: ` unwrapped — this covers newline-delimited JSON.
 
@@ -217,6 +218,7 @@ mutating stored values does not recalculate it. Traversal is bounded to 10,000 n
 that no longer fits removes the older cached value.
 
 You can also pass a custom `CacheProvider` implementation matching the `CacheProvider` interface:
+
 ```typescript
 interface CacheProvider {
   get: (key: string) => Promise<any> | any;

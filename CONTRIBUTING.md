@@ -9,6 +9,7 @@ Thank you for your interest in contributing to **Corriere**! We welcome contribu
 ### Prerequisites
 
 Corriere uses **Node.js (>= 22.13.0)** and **pnpm** as its workspace package manager. Make sure you have the following installed:
+
 - Node.js (v22 or v24 recommended)
 - `pnpm` at the exact version in the `packageManager` field of [package.json](./package.json) (currently `12.16.1`)
 
@@ -132,6 +133,7 @@ all three engines on Linux and runs the complete real-browser suite.
 ### Security-Sensitive Areas 🔐
 
 Some code paths exist specifically to keep credentials from escaping. Changes there deserve an explicit note in your PR description explaining why the guarantee still holds:
+
 - **Redaction** (`src/core/corriereError.ts`) — both `error.config` and `error.response.config` are redacted because errors reach logs and crash reporters. A _successful_ `response.config` is deliberately left readable; that asymmetry is intentional, not an oversight.
 - **Cache keys** (`buildCacheKey` in `src/core/cacheIdentity.ts`) — the header segment is hashed so a `CacheProvider` never receives a bearer token as the key it persists. A custom `cacheKeySerializer` takes on that obligation itself.
 - **Cross-origin hops** (`src/core/fetchAdapter.ts`, `src/features/paginate.ts`) — redirect targets and pagination `next` links are both server-controlled URLs, and both drop `CREDENTIAL_HEADERS` when they cross origins.
@@ -153,6 +155,7 @@ commit [pnpm-lock.yaml](./pnpm-lock.yaml) alongside dependency changes.
 ## Pull Request Guidelines 📬
 
 When submitting a Pull Request, please ensure:
+
 - The title follows the [Conventional Commits](https://www.conventionalcommits.org/) format (e.g. `feat: add retryDelay custom Jitter`, `fix: handle null headers in request`).
 - The description clearly details the motivation, changes made, and references any relevant issues.
 - You have updated the contributors list in [CONTRIBUTORS.md](./CONTRIBUTORS.md) if you are a new contributor!
