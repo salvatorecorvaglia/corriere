@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-04
+
 ### Added
 
 - Add a real-browser Playwright suite for Chromium, Firefox, and WebKit, covering distributed ESM loading without Node globals, native requests/forms, redirects, caching/deduplication, streaming, BYOB capability, pagination, timeouts, cancellation, and redaction. Run it in a dedicated CI job alongside the existing jsdom suite.
