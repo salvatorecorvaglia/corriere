@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Upgrade development tooling to TypeScript `7.0.2`, Playwright `1.65.1`, jsdom `31.0.1`, and Biome `2.6.8`; refresh dependency overrides and the lockfile.
+
 ## [1.3.0] - 2026-11-04
 
 ### Added
