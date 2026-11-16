@@ -64,8 +64,8 @@
     "lint:package": "publint"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.7",
-    "@playwright/test": "^1.65.0",
+    "@biomejs/biome": "^2.6.8",
+    "@playwright/test": "^1.65.1",
     "@types/node": "^26.6.6",
     "@vitest/coverage-v8": "^5.1.0",
     "jsdom": "^31.0.1",
