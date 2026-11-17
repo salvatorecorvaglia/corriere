@@ -49,6 +49,10 @@ ehthumbs.db
 .Spotlight-V100
 .Trashes
 
+# Real-browser test artifacts
+playwright-report/
+test-results/
+
 # AI Tools & Agents
 .openai/
 .chatgpt/
@@ -71,7 +75,3 @@ claude-settings.json
 .windsurf/
 .cline/
 CLAUDE.md
-
-# Real-browser test artifacts
-playwright-report/
-test-results/
