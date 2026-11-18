@@ -70,6 +70,12 @@ jobs:
   browser:
     name: Real browsers (Chromium, Firefox, WebKit)
     runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright:v1.65.1-noble
+      options: --ipc=host
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -81,7 +87,8 @@ jobs:
           node-version: 22
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium firefox webkit
+      - name: Check browser image matches Playwright
+        run: test "$(node -p 'require("@playwright/test/package.json").version')" = "1.65.1"
       - run: pnpm run test:browser:real
       - uses: actions/upload-artifact@v7
         if: failure()
