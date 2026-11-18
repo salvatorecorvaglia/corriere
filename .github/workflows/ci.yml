@@ -20,7 +20,7 @@ on:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 permissions:
   contents: read
@@ -118,6 +118,7 @@ jobs:
       - run: (cd dist && sha256sum *.tgz > SHA256SUMS)
       - uses: actions/upload-artifact@v7
         with:
+          compression-level: 0
           name: npm-package
           path: |
             dist/*.tgz
