@@ -194,7 +194,7 @@ importers:
         specifier: ^9.0.0
         version: 9.0.0(postcss@8.5.33)(typescript@7.0.2)
       typescript:
-        specifier: 7.0.2
+        specifier: ^7.0.2
         version: 7.0.2
       vitest:
         specifier: ^5.1.1
