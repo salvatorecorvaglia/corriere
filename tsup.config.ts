@@ -24,7 +24,8 @@ export default defineConfig([
     outExtension: () => ({ js: '.cjs' }),
     bundle: true,
     clean: true,
-    dts: true,
+    // Type declarations are emitted by TypeScript 7 in build:types.
+    dts: false,
     silent: false,
     target: 'node22',
     platform: 'node',
@@ -38,7 +39,8 @@ export default defineConfig([
     outExtension: () => ({ js: '.js' }),
     bundle: true,
     clean: true,
-    dts: true,
+    // Type declarations are emitted by TypeScript 7 in build:types.
+    dts: false,
     silent: false,
     target: 'node22',
     platform: 'node',

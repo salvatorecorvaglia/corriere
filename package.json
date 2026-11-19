@@ -45,7 +45,7 @@
   ],
   "scripts": {
     "build:cjs": "tsup",
-    "build": "pnpm run build:cjs",
+    "build": "pnpm run build:cjs && pnpm run build:types",
     "prepublishOnly": "pnpm run build",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
@@ -61,7 +61,8 @@
     "test:browser:real": "pnpm run build && playwright test",
     "verify:installed": "node scripts/verify-installed-package.mjs",
     "bench": "pnpm run build && node --expose-gc scripts/benchmark.mjs",
-    "lint:package": "publint"
+    "lint:package": "publint",
+    "build:types": "node scripts/build-types.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.8",
@@ -71,7 +72,7 @@
     "jsdom": "^31.0.1",
     "publint": "0.3.25",
     "tsup": "^9.0.0",
-    "typescript": "6.0.3",
+    "typescript": "^7.0.2",
     "vitest": "^5.1.1"
   }
 }

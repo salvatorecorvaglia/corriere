@@ -88,7 +88,6 @@ void response;
   run(join(root, 'node_modules', '.bin', 'tsc'), [
     '--noEmit',
     '--strict',
-    '--skipLibCheck',
     '--target',
     'ES2022',
     '--module',
