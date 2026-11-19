@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Upgrade development tooling to TypeScript `7.0.2`, Playwright `1.65.1`, jsdom `31.0.1`, Biome `2.6.8`, and Vitest with V8 coverage `5.1.1`; refresh dependency overrides and the lockfile.
+- Add weekly Dependabot checks for GitHub Actions and npm dependencies.
+- Serialize publication workflows per ref, preserve tag-triggered CI runs, and disable compression for packaged artifacts.
+
+### Fixed
+
+- Generate ESM and CommonJS declarations with TypeScript 7 in a separate build step, preserving explicit relative imports for NodeNext consumers.
+- Run browser tests in the matching Playwright container with preinstalled engines and dependencies, and correct home-directory ownership so Firefox can start.
+- Run required CI checks for Markdown-only pull requests.
 
 ## [1.3.0] - 2026-11-04
 
