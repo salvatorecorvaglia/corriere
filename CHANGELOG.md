@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-20
+
 ### Changed
 
 - Upgrade development tooling to TypeScript `7.0.2`, Playwright `1.65.1`, jsdom `31.0.1`, Biome `2.6.8`, and Vitest with V8 coverage `5.1.1`; refresh dependency overrides and the lockfile.
