@@ -6,13 +6,6 @@ Thank you for your interest in contributing to **Corriere**! We welcome contribu
 
 ## Getting Started 🚀
 
-### Prerequisites
-
-Corriere uses **Node.js (>= 22.13.0)** and **pnpm** as its workspace package manager. Make sure you have the following installed:
-
-- Node.js (v22 or v24 recommended)
-- `pnpm` at the exact version in the `packageManager` field of [package.json](./package.json) (currently `12.16.1`)
-
 ### Setup Instructions
 
 1. **Fork the Repository:** Fork the official [repository](https://github.com/salvatorecorvaglia/corriere) on GitHub and clone it locally:
