@@ -12,7 +12,7 @@ minimumReleaseAgeExclude:
   - "@biomejs/cli-linux-x64@2.5.7 || 2.5.13 || 2.6.4 || 2.6.5 || 2.6.8"
   - "@biomejs/cli-win32-arm64@2.5.7 || 2.5.13 || 2.6.4 || 2.6.5 || 2.6.8"
   - "@biomejs/cli-win32-x64@2.5.7 || 2.5.13 || 2.6.4 || 2.6.5 || 2.6.8"
-  - "@types/node@26.3.0 || 26.4.0"
+  - "@types/node@26.3.0 || 26.4.0 || 26.6.11"
   - "@vitest/coverage-v8@5.0.2 || 5.1.1"
   - "@vitest/mocker@5.0.2 || 5.1.1"
   - "@vitest/spy@5.0.2 || 5.1.1"

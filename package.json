@@ -67,7 +67,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.6.9",
     "@playwright/test": "^1.65.1",
-    "@types/node": "^26.6.10",
+    "@types/node": "^26.6.11",
     "@vitest/coverage-v8": "^5.1.2",
     "jsdom": "^31.0.1",
     "publint": "0.3.25",
