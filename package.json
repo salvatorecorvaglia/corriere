@@ -65,14 +65,14 @@
     "build:types": "node scripts/build-types.mjs"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.8",
+    "@biomejs/biome": "^2.6.9",
     "@playwright/test": "^1.65.1",
-    "@types/node": "^26.6.6",
-    "@vitest/coverage-v8": "^5.1.1",
+    "@types/node": "^26.6.10",
+    "@vitest/coverage-v8": "^5.1.2",
     "jsdom": "^31.0.1",
     "publint": "0.3.25",
     "tsup": "^9.0.0",
     "typescript": "^7.0.2",
-    "vitest": "^5.1.1"
+    "vitest": "^5.1.2"
   }
 }
